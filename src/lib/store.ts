@@ -1,11 +1,10 @@
 /**
  * Central State Store (Zustand) for Flour Shop SaaS
- * Fully simulates Supabase features (auth, multi-tenancy, real-time sync, logs)
- * with robust state mutations, automatic stock deductions, and real-time ledger generation.
+ * Supports transparent live Supabase database pooling or fallback offline sandbox.
  */
 
 import { create } from 'zustand';
-import { localDB } from './supabase';
+import { localDB, supabase, config } from './supabase';
 import { 
   Shop, Profile, Product, InventoryLog, Customer, CustomerTransaction, 
   Supplier, SupplierTransaction, Sale, SaleItem, Invoice, Expense, 
@@ -53,26 +52,28 @@ interface AppStore {
   triggerRealtimeSale: () => void;
 
   // Action Methods
-  initStore: () => void;
+  initStore: () => Promise<void>;
+  initOfflineStore: () => void;
+  refreshData: () => Promise<void>;
   signUp: (email: string, password: string, fullName: string, shopName: string) => Promise<{ success: boolean; msg: string }>;
   verifyEmailCode: (code: string) => Promise<{ success: boolean; msg: string }>;
   resendVerificationEmail: () => Promise<void>;
   login: (email: string, pass: string) => Promise<{ success: boolean; msg: string }>;
   logout: () => void;
-  switchRole: (role: UserRole) => void;
+  switchRole: (role: UserRole) => Promise<void>;
 
   // Business CRUD
-  addProduct: (product: Omit<Product, 'id' | 'shop_id' | 'created_at' | 'updated_at'>) => void;
-  updateProduct: (id: string, product: Partial<Product>) => void;
-  deleteProduct: (id: string) => void;
-  addCategory: (name: string, description: string | null) => void;
+  addProduct: (product: Omit<Product, 'id' | 'shop_id' | 'created_at' | 'updated_at'>) => Promise<void>;
+  updateProduct: (id: string, product: Partial<Product>) => Promise<void>;
+  deleteProduct: (id: string) => Promise<void>;
+  addCategory: (name: string, description: string | null) => Promise<void>;
 
   adjustInventory: (data: {
     product_id: string;
     type: 'stock_in' | 'stock_out' | 'adjustment' | 'wastage';
     quantity: number;
     reason: string;
-  }) => void;
+  }) => Promise<void>;
 
   createSale: (data: {
     customer_id: string | null;
@@ -83,27 +84,27 @@ interface AppStore {
     payment_method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa';
   }) => Promise<string | null>;
 
-  addCustomer: (data: { name: string; phone: string; email: string | null; initialBalance: number }) => void;
-  receiveCustomerPayment: (data: { customer_id: string; amount: number; method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa'; description: string }) => void;
+  addCustomer: (data: { name: string; phone: string; email: string | null; initialBalance: number }) => Promise<void>;
+  receiveCustomerPayment: (data: { customer_id: string; amount: number; method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa'; description: string }) => Promise<void>;
   
-  addSupplier: (data: { name: string; phone: string; company: string | null; initialBalance: number }) => void;
-  makeSupplierPayment: (data: { supplier_id: string; amount: number; method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa'; description: string }) => void;
+  addSupplier: (data: { name: string; phone: string; company: string | null; initialBalance: number }) => Promise<void>;
+  makeSupplierPayment: (data: { supplier_id: string; amount: number; method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa'; description: string }) => Promise<void>;
 
   addExpense: (data: {
     category: 'Electricity' | 'Transport' | 'Labor' | 'Rent' | 'Packaging' | 'Maintenance' | 'Other';
     amount: number;
     description: string;
     date: string;
-  }) => void;
+  }) => Promise<void>;
 
-  deleteExpense: (id: string) => void;
-  clearNotification: (id: string) => void;
-  markAllNotificationsRead: () => void;
-  updateSettings: (updatedFields: any) => void;
-  updateShopProfile: (data: Partial<Shop>) => void;
+  deleteExpense: (id: string) => Promise<void>;
+  clearNotification: (id: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
+  updateSettings: (updatedFields: any) => Promise<void>;
+  updateShopProfile: (data: Partial<Shop>) => Promise<void>;
 
   // Super Admin controls
-  toggleShopStatus: (shopId: string) => void;
+  toggleShopStatus: (shopId: string) => Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -136,8 +137,120 @@ export const useStore = create<AppStore>((set, get) => ({
   activityLogs: [],
   settings: {},
 
-  initStore: () => {
-    // Determine initially active user session
+  initStore: async () => {
+    const savedEmail = localStorage.getItem('logged_in_user_email') || 'ac.repair.in.dubai3@gmail.com';
+    
+    // Check if the custom credentials represent a live database
+    if (config.isOnline && supabase) {
+      set({ loading: true, appMode: 'live_supabase' });
+      try {
+        const { data: profiles, error: pErr } = await supabase
+          .from('profiles')
+          .select('*');
+          
+        if (pErr) throw pErr;
+
+        const { data: shops, error: sErr } = await supabase
+          .from('shops')
+          .select('*');
+          
+        if (sErr) throw sErr;
+
+        // Pick matching user profile or top user
+        const matchedProfile = profiles?.find((p: any) => p.email.toLowerCase() === savedEmail.toLowerCase()) || profiles?.[0] || null;
+        if (matchedProfile) {
+          const associatedShop = shops?.find((s: any) => s.id === matchedProfile.shop_id) || null;
+          set({
+            currentUser: matchedProfile,
+            currentShop: associatedShop,
+            allShops: shops || [],
+            appMode: 'live_supabase',
+            loading: false
+          });
+          await get().refreshData();
+        } else {
+          // If profile not found but DB exists, seed owner on the database
+          const defaultShopId = '11111111-1111-1111-1111-111111111111';
+          const defaultUserId = '22222222-2222-2222-2222-222222222222';
+          
+          await supabase.from('shops').insert([{
+            id: defaultShopId,
+            name: 'Supreme Chakki & Grain Mills',
+            logo_url: null,
+            phone: '+92 300 1234567',
+            address: 'Main Bazaar Road, Block 4, Lahore',
+            currency: 'PKR',
+            tax_rate: 5,
+            invoice_footer: 'Thank you for your business! Fresh flour is health.',
+            subscription_status: 'trial'
+          }]);
+
+          const seededOwner = {
+            id: defaultUserId,
+            shop_id: defaultShopId,
+            email: savedEmail,
+            full_name: 'M. Ibrahim Khan (Chakki Owner)',
+            role: 'owner',
+            avatar_url: null,
+            is_verified: true
+          };
+
+          await supabase.from('profiles').insert([seededOwner]);
+          
+          // Seed defaults
+          const seedCatId = '11111111-1111-1111-1111-000000000001';
+          await supabase.from('categories').insert([
+            { id: seedCatId, shop_id: defaultShopId, name: 'Premium Atta', description: 'Fresh stone-ground wheat flour' }
+          ]);
+
+          await supabase.from('products').insert([
+            {
+              id: '11111111-1111-1111-1111-000000000101',
+              shop_id: defaultShopId,
+              category_id: seedCatId,
+              name: 'Premium Desi Chakki Atta',
+              sku: 'DESI-ATTA-001',
+              unit: 'KG',
+              cost_price: 110,
+              sale_price: 135,
+              stock: 450,
+              min_stock_alert: 100
+            }
+          ]);
+
+          await supabase.from('settings').insert([{
+            shop_id: defaultShopId,
+            theme: 'light',
+            language: 'en',
+            print_size: 'thermal_80mm',
+            enable_whatsapp_alert: true,
+            sms_api_key: '',
+            tax_registered: true,
+            tax_id: 'NTN-82910-82B-9'
+          }]);
+
+          const liveShops = await supabase.from('shops').select('*');
+          
+          set({
+            currentUser: seededOwner as any,
+            currentShop: liveShops.data?.[0] || null,
+            allShops: liveShops.data || [],
+            appMode: 'live_supabase',
+            loading: false
+          });
+          await get().refreshData();
+        }
+      } catch (err: any) {
+        console.warn('Supabase Live Load Failed, falling back to Offline engine:', err);
+        set({ loading: false });
+        get().initOfflineStore();
+      }
+    } else {
+      get().initOfflineStore();
+    }
+  },
+
+  initOfflineStore: () => {
     const profiles = localDB.getCollection<Profile>('profiles');
     const shops = localDB.getCollection<Shop>('shops');
     
@@ -147,113 +260,266 @@ export const useStore = create<AppStore>((set, get) => ({
       set({ 
         currentUser: firstOwner, 
         currentShop: associatedShop,
-        allShops: shops
+        allShops: shops,
+        appMode: 'demo'
       });
-      // Fetch datasets
       get().refreshData();
     }
   },
 
-  refreshData: () => {
+  refreshData: async () => {
     const shop = get().currentShop;
     if (!shop) return;
 
-    const filterByShop = <T extends { shop_id: string }>(tbl: string): T[] => {
-      const items = localDB.getCollection<T>(tbl);
-      return items.filter(item => item.shop_id === shop.id);
-    };
+    if (config.isOnline && supabase) {
+      // Fetch datasets in parallel from Live Supabase
+      try {
+        const fetchTable = async (tableName: string) => {
+          const { data, error } = await supabase
+            .from(tableName)
+            .select('*')
+            .eq('shop_id', shop.id);
+          if (error) {
+            console.warn(`Live DB error fetching ${tableName}:`, error);
+            return [];
+          }
+          return data || [];
+        };
 
-    set({
-      products: filterByShop<Product>('products'),
-      categories: filterByShop<any>('categories'),
-      inventoryLogs: filterByShop<InventoryLog>('inventory_logs'),
-      customers: filterByShop<Customer>('customers'),
-      customerTransactions: filterByShop<CustomerTransaction>('customer_transactions'),
-      suppliers: filterByShop<Supplier>('suppliers'),
-      supplierTransactions: filterByShop<SupplierTransaction>('supplier_transactions'),
-      sales: filterByShop<Sale>('sales'),
-      saleItems: filterByShop<SaleItem>('sale_items'),
-      invoices: filterByShop<Invoice>('invoices'),
-      expenses: filterByShop<Expense>('expenses'),
-      notifications: filterByShop<Notification>('notifications'),
-      activityLogs: filterByShop<ActivityLog>('activity_logs'),
-      settings: localDB.getCollection<any>('settings') || {}
-    });
+        const [
+          products,
+          categories,
+          inventoryLogs,
+          customers,
+          customerTransactions,
+          suppliers,
+          supplierTransactions,
+          sales,
+          saleItems,
+          invoices,
+          expenses,
+          notifications,
+          activityLogs
+        ] = await Promise.all([
+          fetchTable('products'),
+          fetchTable('categories'),
+          fetchTable('inventory_logs'),
+          fetchTable('customers'),
+          fetchTable('customer_transactions'),
+          fetchTable('suppliers'),
+          fetchTable('supplier_transactions'),
+          fetchTable('sales'),
+          fetchTable('sale_items'),
+          fetchTable('invoices'),
+          fetchTable('expenses'),
+          fetchTable('notifications'),
+          fetchTable('activity_logs')
+        ]);
+
+        let settingsObj = {};
+        const { data: settingsData } = await supabase
+          .from('settings')
+          .select('*')
+          .eq('shop_id', shop.id)
+          .maybeSingle();
+        if (settingsData) {
+          settingsObj = settingsData;
+        }
+
+        set({
+          products: products || [],
+          categories: categories || [],
+          inventoryLogs: inventoryLogs || [],
+          customers: customers || [],
+          customerTransactions: customerTransactions || [],
+          suppliers: suppliers || [],
+          supplierTransactions: supplierTransactions || [],
+          sales: sales || [],
+          saleItems: saleItems || [],
+          invoices: invoices || [],
+          expenses: expenses || [],
+          notifications: notifications || [],
+          activityLogs: activityLogs || [],
+          settings: settingsObj,
+          appMode: 'live_supabase'
+        });
+      } catch (err) {
+        console.error('Supabase parallel synchronization failed:', err);
+      }
+    } else {
+      const filterByShop = <T extends { shop_id: string }>(tbl: string): T[] => {
+        const items = localDB.getCollection<T>(tbl);
+        return items.filter(item => item.shop_id === shop.id);
+      };
+
+      set({
+        products: filterByShop<Product>('products'),
+        categories: filterByShop<any>('categories'),
+        inventoryLogs: filterByShop<InventoryLog>('inventory_logs'),
+        customers: filterByShop<Customer>('customers'),
+        customerTransactions: filterByShop<CustomerTransaction>('customer_transactions'),
+        suppliers: filterByShop<Supplier>('suppliers'),
+        supplierTransactions: filterByShop<SupplierTransaction>('supplier_transactions'),
+        sales: filterByShop<Sale>('sales'),
+        saleItems: filterByShop<SaleItem>('sale_items'),
+        invoices: filterByShop<Invoice>('invoices'),
+        expenses: filterByShop<Expense>('expenses'),
+        notifications: filterByShop<Notification>('notifications'),
+        activityLogs: filterByShop<ActivityLog>('activity_logs'),
+        settings: localDB.getCollection<any>('settings') || {},
+        appMode: 'demo'
+      });
+    }
   },
 
-  // Auth implementation
   signUp: async (email, password, fullName, shopName) => {
     set({ loading: true });
     
-    // Check credentials or duplicate
-    const profiles = localDB.getCollection<Profile>('profiles');
-    if (profiles.some(p => p.email.toLowerCase() === email.toLowerCase())) {
-      set({ loading: false });
-      return { success: false, msg: 'Email address already exists' };
+    if (config.isOnline && supabase) {
+      try {
+        const newShopId = crypto.randomUUID();
+        const newUserId = crypto.randomUUID();
+
+        const newShop: Shop = {
+          id: newShopId,
+          name: shopName,
+          logo_url: null,
+          phone: '',
+          address: '',
+          currency: 'PKR',
+          tax_rate: 5,
+          invoice_footer: 'Thank you for your business!',
+          subscription_status: 'trial',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const { error: sErr } = await supabase.from('shops').insert([newShop]);
+        if (sErr) throw sErr;
+
+        const newProfile: Profile = {
+          id: newUserId,
+          shop_id: newShopId,
+          email: email.trim(),
+          full_name: fullName,
+          role: 'owner',
+          avatar_url: null,
+          is_verified: true,
+          created_at: new Date().toISOString()
+        };
+
+        const { error: pErr } = await supabase.from('profiles').insert([newProfile]);
+        if (pErr) throw pErr;
+
+        const liveCatId = crypto.randomUUID();
+        await supabase.from('categories').insert([{
+          id: liveCatId,
+          shop_id: newShopId,
+          name: 'Premium Ground Flour',
+          description: 'Finely milled wheat flour options'
+        }]);
+
+        await supabase.from('products').insert([{
+          id: crypto.randomUUID(),
+          shop_id: newShopId,
+          category_id: liveCatId,
+          name: 'Supreme Wholewheat Atta',
+          sku: 'WHOLE-WHT-01',
+          unit: 'KG',
+          cost_price: 110,
+          sale_price: 135,
+          stock: 300,
+          min_stock_alert: 50
+        }]);
+
+        await supabase.from('settings').insert([{
+          shop_id: newShopId,
+          theme: 'light',
+          language: 'en',
+          print_size: 'thermal_80mm',
+          enable_whatsapp_alert: true,
+          sms_api_key: '',
+          tax_registered: true,
+          tax_id: 'NTN-82910-82B-9'
+        }]);
+
+        localStorage.setItem('logged_in_user_email', email.trim().toLowerCase());
+
+        set({
+          currentUser: newProfile,
+          currentShop: newShop,
+          loading: false,
+          verification: { emailSent: false, emailToVerify: null, otpToken: null, expired: false }
+        });
+
+        await get().refreshData();
+        return { success: true, msg: 'Live Supabase shop account registered!' };
+      } catch (err: any) {
+        set({ loading: false });
+        return { success: false, msg: `Live Database Registration Error: ${err.message}` };
+      }
+    } else {
+      // LocalDB offline logic
+      const profiles = localDB.getCollection<Profile>('profiles');
+      if (profiles.some(p => p.email.toLowerCase() === email.toLowerCase())) {
+        set({ loading: false });
+        return { success: false, msg: 'Email address already exists' };
+      }
+
+      const newShopId = `shop-${Date.now()}`;
+      const newUserId = `user-${Date.now()}`;
+      const testOtpToken = Math.floor(100000 + Math.random() * 900000).toString();
+
+      const newShop: Shop = {
+        id: newShopId,
+        name: shopName,
+        logo_url: null,
+        phone: '',
+        address: '',
+        currency: 'PKR',
+        tax_rate: 5,
+        invoice_footer: 'Thank you for your business!',
+        subscription_status: 'trial',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const newProfile: Profile = {
+        id: newUserId,
+        shop_id: newShopId,
+        email: email,
+        full_name: fullName,
+        role: 'owner',
+        avatar_url: null,
+        is_verified: false,
+        created_at: new Date().toISOString()
+      };
+
+      const shops = localDB.getCollection<Shop>('shops');
+      shops.push(newShop);
+      localDB.saveCollection('shops', shops);
+
+      profiles.push(newProfile);
+      localDB.saveCollection('profiles', profiles);
+
+      const newCategories = [
+        { id: `cat-1-${Date.now()}`, shop_id: newShopId, name: 'Premium Ground Flour', description: 'Finely milled grain packs' },
+        { id: `cat-2-${Date.now()}`, shop_id: newShopId, name: 'Raw Grain Sacks', description: 'Whole grains bags' }
+      ];
+      const categories = localDB.getCollection<any>('categories');
+      categories.push(...newCategories);
+      localDB.saveCollection('categories', categories);
+
+      set({
+        verification: { emailSent: true, emailToVerify: email, otpToken: testOtpToken, expired: false },
+        loading: false
+      });
+
+      return { 
+        success: true, 
+        msg: `Verification code registered: ${testOtpToken} to ${email}.` 
+      };
     }
-
-    // Prepare Shop, unique tokens, and onboarding payload
-    const newShopId = `shop-${Date.now()}`;
-    const newUserId = `user-${Date.now()}`;
-    const testOtpToken = Math.floor(100000 + Math.random() * 900000).toString(); // e.g. "582910"
-
-    const newShop: Shop = {
-      id: newShopId,
-      name: shopName,
-      logo_url: null,
-      phone: '',
-      address: '',
-      currency: 'PKR',
-      tax_rate: 5,
-      invoice_footer: 'Thank you for your business!',
-      subscription_status: 'trial',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-
-    const newProfile: Profile = {
-      id: newUserId,
-      shop_id: newShopId,
-      email: email,
-      full_name: fullName,
-      role: 'owner',
-      avatar_url: null,
-      is_verified: false, // verification mandatory
-      created_at: new Date().toISOString()
-    };
-
-    // Save pre-verified items in memory/local for confirmation
-    const shops = localDB.getCollection<Shop>('shops');
-    shops.push(newShop);
-    localDB.saveCollection('shops', shops);
-
-    profiles.push(newProfile);
-    localDB.saveCollection('profiles', profiles);
-
-    // Initial Shop Config Defaults (Categories)
-    const newCategories = [
-      { id: `cat-1-${Date.now()}`, shop_id: newShopId, name: 'Premium Ground Flour', description: 'Finely milled grain packs' },
-      { id: `cat-2-${Date.now()}`, shop_id: newShopId, name: 'Raw Grain Sacks', description: 'Whole grains bags' }
-    ];
-    const categories = localDB.getCollection<any>('categories');
-    categories.push(...newCategories);
-    localDB.saveCollection('categories', categories);
-
-    // Set interactive verification state
-    set({
-      verification: {
-        emailSent: true,
-        emailToVerify: email,
-        otpToken: testOtpToken,
-        expired: false
-      },
-      loading: false
-    });
-
-    return { 
-      success: true, 
-      msg: `Verification code emailed to ${email}. (Dev Simulation code: ${testOtpToken})` 
-    };
   },
 
   verifyEmailCode: async (code) => {
@@ -266,7 +532,6 @@ export const useStore = create<AppStore>((set, get) => ({
       return { success: false, msg: 'Invalid verification token. Please try again.' };
     }
 
-    // Activate the user account
     const email = verification.emailToVerify;
     const profiles = localDB.getCollection<Profile>('profiles');
     const userIndex = profiles.findIndex(p => p.email.toLowerCase() === email.toLowerCase());
@@ -278,40 +543,24 @@ export const useStore = create<AppStore>((set, get) => ({
       const shops = localDB.getCollection<Shop>('shops');
       const currentShop = shops.find(s => s.id === profiles[userIndex].shop_id) || null;
 
-      // Seed default product for this shop so it is not blank
-      const defaultProducts: Product[] = [
-        {
-          id: `p-desi-${Date.now()}`,
-          shop_id: currentShop?.id || '',
-          category_id: null,
-          name: 'Supreme Wholewheat Atta',
-          sku: 'WHOLE-WHT-01',
-          unit: 'KG',
-          cost_price: 110,
-          sale_price: 135,
-          stock: 300,
-          min_stock_alert: 50,
-          image_url: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      ];
+      const defaultProducts: Product[] = [{
+        id: `p-desi-${Date.now()}`,
+        shop_id: currentShop?.id || '',
+        category_id: null,
+        name: 'Supreme Wholewheat Atta',
+        sku: 'WHOLE-WHT-01',
+        unit: 'KG',
+        cost_price: 110,
+        sale_price: 135,
+        stock: 300,
+        min_stock_alert: 50,
+        image_url: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }];
       const products = localDB.getCollection<Product>('products');
       products.push(...defaultProducts);
       localDB.saveCollection('products', products);
-
-      // Seed greetings log
-      const initialLogs: ActivityLog[] = [{
-        id: `act-${Date.now()}`,
-        shop_id: currentShop?.id || '',
-        user_email: email,
-        action: 'Account Verified & Created',
-        details: `Shop '${currentShop?.name}' registration and verification complete. Seeding default inventory.`,
-        created_at: new Date().toISOString()
-      }];
-      const logs = localDB.getCollection<ActivityLog>('activity_logs');
-      logs.push(...initialLogs);
-      localDB.saveCollection('activity_logs', logs);
 
       set({
         currentUser: profiles[userIndex],
@@ -320,8 +569,8 @@ export const useStore = create<AppStore>((set, get) => ({
         allShops: shops
       });
 
-      get().refreshData();
-      return { success: true, msg: 'Email verification successful! Logging into your dashboard...' };
+      await get().refreshData();
+      return { success: true, msg: 'Email verification successful!' };
     }
 
     return { success: false, msg: 'Account not found. Try signing up again.' };
@@ -332,272 +581,409 @@ export const useStore = create<AppStore>((set, get) => ({
     if (verification.emailToVerify) {
       const newOtp = Math.floor(111111 + Math.random() * 888888).toString();
       set({
-        verification: {
-          ...verification,
-          otpToken: newOtp
-        }
+        verification: { ...verification, otpToken: newOtp }
       });
-      console.log(`[SIMULATED EMAIL RETRY] Resent token: ${newOtp} to ${verification.emailToVerify}`);
+      console.log(`[SIMULATED CODE RETRY] Resent token: ${newOtp} to ${verification.emailToVerify}`);
     }
   },
 
   login: async (email, pass) => {
     set({ loading: true, errorMessage: null });
 
-    const profiles = localDB.getCollection<Profile>('profiles');
-    const user = profiles.find(p => p.email.toLowerCase() === email.toLowerCase());
+    if (config.isOnline && supabase) {
+      try {
+        const { data: profiles, error: pErr } = await supabase
+          .from('profiles')
+          .select('*');
+        if (pErr) throw pErr;
 
-    if (!user) {
-      set({ loading: false });
-      return { success: false, msg: 'Invalid email address or passcode' };
-    }
+        const user = profiles?.find((p: any) => p.email.toLowerCase() === email.trim().toLowerCase());
+        if (!user) {
+          set({ loading: false });
+          return { success: false, msg: 'This user account does not exist. Please use Sign Up.' };
+        }
 
-    // Require email confirmation check (unless disabled or admin verified)
-    if (!user.is_verified) {
-      const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        const { data: shops, error: sErr } = await supabase
+          .from('shops')
+          .select('*');
+        if (sErr) throw sErr;
+        
+        const userShop = shops?.find((s: any) => s.id === user.shop_id) || null;
+        localStorage.setItem('logged_in_user_email', email.trim().toLowerCase());
+
+        set({
+          currentUser: user,
+          currentShop: userShop,
+          loading: false,
+          allShops: shops || []
+        });
+
+        // Log session activity
+        await supabase.from('activity_logs').insert([{
+          id: crypto.randomUUID(),
+          shop_id: user.shop_id,
+          user_email: email,
+          action: 'Authorized Session (SQL-Live)',
+          details: `Connected successfully. Mode: Live Cloud DB`
+        }]);
+
+        await get().refreshData();
+        return { success: true, msg: 'Successfully connected and pooled remote cloud database.' };
+      } catch (err: any) {
+        set({ loading: false });
+        return { success: false, msg: `Supabase Live Error: ${err.message}` };
+      }
+    } else {
+      const profiles = localDB.getCollection<Profile>('profiles');
+      const user = profiles.find(p => p.email.toLowerCase() === email.toLowerCase());
+
+      if (!user) {
+        set({ loading: false });
+        return { success: false, msg: 'Invalid email address or passcode' };
+      }
+
+      if (!user.is_verified) {
+        const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        set({
+          verification: { emailSent: true, emailToVerify: email, otpToken: generatedOtp, expired: false },
+          loading: false
+        });
+        return { success: false, msg: `Registration is incomplete. Code resent to ${email}. (Code: ${generatedOtp})` };
+      }
+
+      const shops = localDB.getCollection<Shop>('shops');
+      const userShop = shops.find(s => s.id === user.shop_id) || null;
+
+      localStorage.setItem('logged_in_user_email', email.trim().toLowerCase());
+
       set({
-        verification: {
-          emailSent: true,
-          emailToVerify: email,
-          otpToken: generatedOtp,
-          expired: false
-        },
-        loading: false
+        currentUser: user,
+        currentShop: userShop,
+        loading: false,
+        allShops: shops
       });
-      return { success: false, msg: `Registration is incomplete. Verification code resent to ${email}. (Code: ${generatedOtp})` };
-    }
 
-    const shops = localDB.getCollection<Shop>('shops');
-    const userShop = shops.find(s => s.id === user.shop_id) || null;
-
-    set({
-      currentUser: user,
-      currentShop: userShop,
-      loading: false,
-      allShops: shops
-    });
-
-    get().refreshData();
-
-    // Log Activity
-    const actLogs = localDB.getCollection<ActivityLog>('activity_logs');
-    actLogs.push({
-      id: `act-${Date.now()}`,
-      shop_id: user.shop_id,
-      user_email: email,
-      action: 'Session Authorize',
-      details: `User connected from Client Agent browser in role '${user.role}'`,
-      created_at: new Date().toISOString()
-    });
-    localDB.saveCollection('activity_logs', actLogs);
-    get().refreshData();
-
-    return { success: true, msg: 'Authorized successfully.' };
-  },
-
-  logout: () => {
-    // Audit active state exit
-    const { currentUser } = get();
-    if (currentUser) {
       const actLogs = localDB.getCollection<ActivityLog>('activity_logs');
       actLogs.push({
         id: `act-${Date.now()}`,
-        shop_id: currentUser.shop_id,
-        user_email: currentUser.email,
-        action: 'Session Terminated',
-        details: 'User logged out intentionally.',
+        shop_id: user.shop_id,
+        user_email: email,
+        action: 'Session Authorize',
+        details: `User connected offline in role '${user.role}'`,
         created_at: new Date().toISOString()
       });
       localDB.saveCollection('activity_logs', actLogs);
+
+      await get().refreshData();
+      return { success: true, msg: 'Sandbox Authorized successfully.' };
     }
+  },
+
+  logout: () => {
     set({ currentUser: null, currentShop: null });
   },
 
-  switchRole: (role) => {
+  switchRole: async (role) => {
     const { currentUser } = get();
     if (!currentUser) return;
-    const updated = { ...currentUser, role };
-    set({ currentUser: updated });
-    
-    // Save to profiles database
-    const profiles = localDB.getCollection<Profile>('profiles');
-    const idx = profiles.findIndex(p => p.id === currentUser.id);
-    if (idx !== -1) {
-      profiles[idx].role = role;
-      localDB.saveCollection('profiles', profiles);
+
+    if (config.isOnline && supabase) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ role })
+          .eq('id', currentUser.id);
+        if (error) throw error;
+        set({ currentUser: { ...currentUser, role } });
+        await get().refreshData();
+      } catch (err) {
+        console.error('Failed to change role over Supabase:', err);
+      }
+    } else {
+      const updated = { ...currentUser, role };
+      set({ currentUser: updated });
+      const profiles = localDB.getCollection<Profile>('profiles');
+      const idx = profiles.findIndex(p => p.id === currentUser.id);
+      if (idx !== -1) {
+        profiles[idx].role = role;
+        localDB.saveCollection('profiles', profiles);
+        await get().refreshData();
+      }
     }
   },
 
-  // Products CRUD
-  addProduct: (product) => {
+  addProduct: async (product) => {
     const shop = get().currentShop;
     if (!shop) return;
 
+    const newProgId = config.isOnline ? crypto.randomUUID() : `prod-${Date.now()}`;
     const newProduct: Product = {
       ...product,
-      id: `prod-${Date.now()}`,
+      id: newProgId,
       shop_id: shop.id,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
 
-    const products = localDB.getCollection<Product>('products');
-    products.push(newProduct);
-    localDB.saveCollection('products', products);
-
-    // Initial Stock In Log
-    if (newProduct.stock > 0) {
-      const logs = localDB.getCollection<InventoryLog>('inventory_logs');
-      logs.push({
-        id: `log-${Date.now()}`,
-        shop_id: shop.id,
-        product_id: newProduct.id,
-        type: 'stock_in',
-        quantity: newProduct.stock,
-        unit: newProduct.unit,
-        reason: 'Initial Product Stock Seed',
-        created_by: get().currentUser?.id || 'sys',
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('inventory_logs', logs);
-    }
-
-    get().refreshData();
-  },
-
-  updateProduct: (id, data) => {
-    const products = localDB.getCollection<Product>('products');
-    const idx = products.findIndex(p => p.id === id);
-    if (idx !== -1) {
-      const prevStock = products[idx].stock;
-      products[idx] = {
-        ...products[idx],
-        ...data,
-        updated_at: new Date().toISOString()
-      };
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('products').insert([newProduct]);
+        if (error) throw error;
+        
+        if (newProduct.stock > 0) {
+          await supabase.from('inventory_logs').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            product_id: newProduct.id,
+            type: 'stock_in',
+            quantity: newProduct.stock,
+            unit: newProduct.unit,
+            reason: 'Product Stock Seed',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          }]);
+        }
+      } catch (err) {
+        console.error('Failed to write product to live Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const products = localDB.getCollection<Product>('products');
+      products.push(newProduct);
       localDB.saveCollection('products', products);
 
-      // Check if stock was updated directly
-      if (data.stock !== undefined && data.stock !== prevStock) {
-        const diff = data.stock - prevStock;
+      if (newProduct.stock > 0) {
         const logs = localDB.getCollection<InventoryLog>('inventory_logs');
         logs.push({
           id: `log-${Date.now()}`,
-          shop_id: get().currentShop?.id || '',
-          product_id: id,
-          type: diff > 0 ? 'stock_in' : 'stock_out',
-          quantity: Math.abs(diff),
-          unit: products[idx].unit,
-          reason: 'Direct Stock Override Edit',
+          shop_id: shop.id,
+          product_id: newProduct.id,
+          type: 'stock_in',
+          quantity: newProduct.stock,
+          unit: newProduct.unit,
+          reason: 'Initial Product Stock Seed',
           created_by: get().currentUser?.id || 'sys',
           created_at: new Date().toISOString()
         });
         localDB.saveCollection('inventory_logs', logs);
       }
-
-      get().refreshData();
     }
+
+    await get().refreshData();
   },
 
-  deleteProduct: (id) => {
-    const products = localDB.getCollection<Product>('products').filter(p => p.id !== id);
-    localDB.saveCollection('products', products);
-    get().refreshData();
+  updateProduct: async (id, data) => {
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const prevProd = get().products.find(p => p.id === id);
+        const prevStock = prevProd ? prevProd.stock : 0;
+        const unit = prevProd ? prevProd.unit : 'KG';
+        
+        const { error } = await supabase
+          .from('products')
+          .update({
+            ...data,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id);
+        if (error) throw error;
+
+        if (data.stock !== undefined && data.stock !== prevStock) {
+          const diff = data.stock - prevStock;
+          await supabase.from('inventory_logs').insert([{
+            id: crypto.randomUUID(),
+            shop_id: get().currentShop?.id || '',
+            product_id: id,
+            type: diff > 0 ? 'stock_in' : 'stock_out',
+            quantity: Math.abs(diff),
+            unit: unit,
+            reason: 'Direct Stock Override Edit',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          }]);
+        }
+      } catch (err) {
+        console.error('Failed to sync updated product to live Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const products = localDB.getCollection<Product>('products');
+      const idx = products.findIndex(p => p.id === id);
+      if (idx !== -1) {
+        const prevStock = products[idx].stock;
+        products[idx] = { ...products[idx], ...data, updated_at: new Date().toISOString() };
+        localDB.saveCollection('products', products);
+
+        if (data.stock !== undefined && data.stock !== prevStock) {
+          const diff = data.stock - prevStock;
+          const logs = localDB.getCollection<InventoryLog>('inventory_logs');
+          logs.push({
+            id: `log-${Date.now()}`,
+            shop_id: get().currentShop?.id || '',
+            product_id: id,
+            type: diff > 0 ? 'stock_in' : 'stock_out',
+            quantity: Math.abs(diff),
+            unit: products[idx].unit,
+            reason: 'Direct Stock Override Edit',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          });
+          localDB.saveCollection('inventory_logs', logs);
+        }
+      }
+    }
+    await get().refreshData();
   },
 
-  addCategory: (name, description) => {
+  deleteProduct: async (id) => {
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('products').delete().eq('id', id);
+        if (error) throw error;
+      } catch (err) {
+        console.error('Failed to delete live product:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const products = localDB.getCollection<Product>('products').filter(p => p.id !== id);
+      localDB.saveCollection('products', products);
+    }
+    await get().refreshData();
+  },
+
+  addCategory: async (name, description) => {
     const shop = get().currentShop;
     if (!shop) return;
-    const categories = localDB.getCollection<any>('categories');
-    categories.push({
-      id: `cat-${Date.now()}`,
-      shop_id: shop.id,
-      name,
-      description
-    });
-    localDB.saveCollection('categories', categories);
-    get().refreshData();
+
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('categories').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          name,
+          description
+        }]);
+        if (error) throw error;
+      } catch (err) {
+        console.error('Failed to load category to live DB:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const categories = localDB.getCollection<any>('categories');
+      categories.push({ id: `cat-${Date.now()}`, shop_id: shop.id, name, description });
+      localDB.saveCollection('categories', categories);
+    }
+    await get().refreshData();
   },
 
-  // Inventory logic
-  adjustInventory: ({ product_id, type, quantity, reason }) => {
+  adjustInventory: async ({ product_id, type, quantity, reason }) => {
     const shop = get().currentShop;
     if (!shop) return;
 
-    const products = localDB.getCollection<Product>('products');
-    const pIdx = products.findIndex(p => p.id === product_id);
-    if (pIdx === -1) return;
+    const targetProduct = get().products.find(p => p.id === product_id);
+    if (!targetProduct) return;
 
     const factor = (type === 'stock_in' || type === 'adjustment') ? 1 : -1;
     const finalChange = quantity * factor;
-    products[pIdx].stock = Math.max(0, products[pIdx].stock + finalChange);
-    products[pIdx].updated_at = new Date().toISOString();
-    localDB.saveCollection('products', products);
+    const computedStock = Math.max(0, targetProduct.stock + finalChange);
 
-    const logs = localDB.getCollection<InventoryLog>('inventory_logs');
-    logs.push({
-      id: `log-${Date.now()}`,
-      shop_id: shop.id,
-      product_id,
-      type,
-      quantity,
-      unit: products[pIdx].unit,
-      reason,
-      created_by: get().currentUser?.id || 'sys',
-      created_at: new Date().toISOString()
-    });
-    localDB.saveCollection('inventory_logs', logs);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        await supabase.from('products').update({ stock: computedStock, updated_at: new Date().toISOString() }).eq('id', product_id);
+        await supabase.from('inventory_logs').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          product_id,
+          type,
+          quantity,
+          unit: targetProduct.unit,
+          reason,
+          created_by: get().currentUser?.id || 'sys'
+        }]);
 
-    // Throw alerts dynamically if low stock
-    if (products[pIdx].stock <= products[pIdx].min_stock_alert) {
-      const alerts = localDB.getCollection<Notification>('notifications');
-      alerts.push({
-        id: `not-${Date.now()}`,
-        shop_id: shop.id,
-        title: 'Critical Stock Alert',
-        message: `${products[pIdx].name} contains only ${products[pIdx].stock} ${products[pIdx].unit} left (Alert trigger is ${products[pIdx].min_stock_alert})`,
-        type: 'low_stock',
-        read: false,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('notifications', alerts);
+        if (computedStock <= targetProduct.min_stock_alert) {
+          await supabase.from('notifications').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            title: 'Critical Stock Alert',
+            message: `${targetProduct.name} only has ${computedStock} ${targetProduct.unit} left.`,
+            type: 'low_stock',
+            read: false
+          }]);
+        }
+      } catch (err) {
+        console.error('Supabase inventory log save failed:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const products = localDB.getCollection<Product>('products');
+      const pIdx = products.findIndex(p => p.id === product_id);
+      if (pIdx !== -1) {
+        products[pIdx].stock = computedStock;
+        products[pIdx].updated_at = new Date().toISOString();
+        localDB.saveCollection('products', products);
+
+        const logs = localDB.getCollection<InventoryLog>('inventory_logs');
+        logs.push({
+          id: `log-${Date.now()}`,
+          shop_id: shop.id,
+          product_id,
+          type,
+          quantity,
+          unit: products[pIdx].unit,
+          reason,
+          created_by: get().currentUser?.id || 'sys',
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('inventory_logs', logs);
+
+        if (products[pIdx].stock <= products[pIdx].min_stock_alert) {
+          const alerts = localDB.getCollection<Notification>('notifications');
+          alerts.push({
+            id: `not-${Date.now()}`,
+            shop_id: shop.id,
+            title: 'Critical Stock Alert',
+            message: `${products[pIdx].name} contains only ${products[pIdx].stock} ${products[pIdx].unit} left (Alert trigger is ${products[pIdx].min_stock_alert})`,
+            type: 'low_stock',
+            read: false,
+            created_at: new Date().toISOString()
+          });
+          localDB.saveCollection('notifications', alerts);
+        }
+      }
     }
 
-    get().refreshData();
+    await get().refreshData();
   },
 
-  // Sales engine with instant inventory deduction and transaction loggers
   createSale: async (data) => {
     const shop = get().currentShop;
     const user = get().currentUser;
     if (!shop || !user) return null;
 
-    const products = localDB.getCollection<Product>('products');
-    const sales = localDB.getCollection<Sale>('sales');
-    const saleItems = localDB.getCollection<SaleItem>('sale_items');
-    const invoices = localDB.getCollection<Invoice>('invoices');
-    const customers = localDB.getCollection<Customer>('customers');
-    const custTransactions = localDB.getCollection<CustomerTransaction>('customer_transactions');
-
-    const saleId = `sale-${Date.now()}`;
+    const saleId = config.isOnline ? crypto.randomUUID() : `sale-${Date.now()}`;
     let itemSubtotal = 0;
     const saleItemsList: SaleItem[] = [];
 
-    // 1. Process items and deduct inventory
+    // Calculate subtotal
     for (const line of data.items) {
-      const pIdx = products.findIndex(p => p.id === line.product_id);
-      if (pIdx === -1) continue;
-
-      const prod = products[pIdx];
-      // Deduct stock
-      prod.stock = Math.max(0, prod.stock - line.quantity);
-      prod.updated_at = new Date().toISOString();
-
+      const prod = get().products.find(p => p.id === line.product_id);
+      if (!prod) continue;
       const lineTotal = line.quantity * line.sale_price;
       itemSubtotal += lineTotal;
 
       saleItemsList.push({
-        id: `si-${Date.now()}-${Math.random()}`,
+        id: config.isOnline ? crypto.randomUUID() : `si-${Date.now()}-${Math.random()}`,
         shop_id: shop.id,
         sale_id: saleId,
         product_id: prod.id,
@@ -608,30 +994,11 @@ export const useStore = create<AppStore>((set, get) => ({
         cost_price_at_sale: prod.cost_price,
         total: lineTotal
       });
-
-      // Stock notification alerts if falls below alert limit
-      if (prod.stock <= prod.min_stock_alert) {
-        const alerts = localDB.getCollection<Notification>('notifications');
-        alerts.push({
-          id: `not-${Date.now()}-${Math.random()}`,
-          shop_id: shop.id,
-          title: 'Low Stock Alert',
-          message: `${prod.name} has been depleted to ${prod.stock} ${prod.unit} via sale ${saleId}`,
-          type: 'low_stock',
-          read: false,
-          created_at: new Date().toISOString()
-        });
-        localDB.saveCollection('notifications', alerts);
-      }
     }
-
-    // Save deducted products
-    localDB.saveCollection('products', products);
 
     const taxAmount = parseFloat(((itemSubtotal - data.discount) * (shop.tax_rate / 100)).toFixed(2));
     const netAmount = Math.max(0, itemSubtotal - data.discount + taxAmount);
     
-    // Check payment status based on active customer ledger balance
     let paymentStatus: 'paid' | 'partially_paid' | 'unpaid' = 'paid';
     if (data.paid_amount >= netAmount) {
       paymentStatus = 'paid';
@@ -641,123 +1008,264 @@ export const useStore = create<AppStore>((set, get) => ({
       paymentStatus = 'unpaid';
     }
 
-    // 2. Customer Credit Adjustments
     const remainingUnpaidCharge = netAmount - data.paid_amount;
-    if (data.customer_id && remainingUnpaidCharge > 0) {
-      const cIdx = customers.findIndex(c => c.id === data.customer_id);
-      if (cIdx !== -1) {
-        customers[cIdx].balance += remainingUnpaidCharge;
 
-        custTransactions.push({
-          id: `tx-${Date.now()}`,
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        // Decrease stock on products
+        for (const line of data.items) {
+          const prod = get().products.find(p => p.id === line.product_id);
+          if (!prod) continue;
+          const finalStock = Math.max(0, prod.stock - line.quantity);
+          await supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id);
+          
+          if (finalStock <= prod.min_stock_alert) {
+            await supabase.from('notifications').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              title: 'Low Stock Alert',
+              message: `${prod.name} has been depleted to ${finalStock} ${prod.unit} via sale ${saleId}`,
+              type: 'low_stock',
+              read: false
+            }]);
+          }
+        }
+
+        // Customer balances adjustments
+        if (data.customer_id && remainingUnpaidCharge > 0) {
+          const activeCustomer = get().customers.find(c => c.id === data.customer_id);
+          if (activeCustomer) {
+            const updatedBal = activeCustomer.balance + remainingUnpaidCharge;
+            await supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id);
+            await supabase.from('customer_transactions').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              customer_id: data.customer_id,
+              type: 'credit',
+              amount: remainingUnpaidCharge,
+              sale_id: saleId,
+              description: `Outstanding credit balance. PKR ${data.paid_amount} deposit.`
+            }]);
+          }
+        }
+
+        if (data.customer_id && data.paid_amount > 0) {
+          await supabase.from('customer_transactions').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            customer_id: data.customer_id,
+            type: 'payment_received',
+            amount: data.paid_amount,
+            sale_id: saleId,
+            description: `Deposit toward checkout sale`,
+            payment_method: data.payment_method
+          }]);
+        }
+
+        // Assemble and insert Sale
+        const newSale: Sale = {
+          id: saleId,
           shop_id: shop.id,
           customer_id: data.customer_id,
-          type: 'credit',
-          amount: remainingUnpaidCharge,
+          customer_name_manual: data.customer_name_manual,
+          total_amount: itemSubtotal,
+          discount: data.discount,
+          tax_amount: taxAmount,
+          net_amount: netAmount,
+          paid_amount: data.paid_amount,
+          payment_method: data.payment_method,
+          payment_status: paymentStatus,
+          created_by: user.id,
+          created_at: new Date().toISOString()
+        };
+        await supabase.from('sales').insert([newSale]);
+
+        // Insert items
+        if (saleItemsList.length > 0) {
+          await supabase.from('sale_items').insert(saleItemsList);
+        }
+
+        // Insert invoice
+        const invoiceCountResult = await supabase.from('sales').select('id', { count: 'exact' });
+        const salesCount = invoiceCountResult.count || 20;
+        const invNumber = `INV-${new Date().getFullYear()}-${1000 + salesCount}`;
+        const newInvoice: Invoice = {
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
           sale_id: saleId,
-          description: `Credit amount outstanding from checkout sale. Got PKR ${data.paid_amount} deposit.`,
-          payment_method: null,
+          invoice_number: invNumber,
+          due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
+          notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
+          created_at: new Date().toISOString()
+        };
+        await supabase.from('invoices').insert([newInvoice]);
+
+        // Activity log
+        const customerLabel = data.customer_id 
+          ? (get().customers.find(c => c.id === data.customer_id)?.name || 'Credit Account')
+          : (data.customer_name_manual || 'Walk-in customer');
+
+        await supabase.from('activity_logs').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          user_email: user.email,
+          action: 'Created POS Transaction',
+          details: `Invoice ${invNumber} generated for ${customerLabel}. Paid: PKR ${data.paid_amount.toLocaleString()}.`
+        }]);
+
+        await supabase.from('notifications').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          title: 'POS Sale Executed',
+          message: `Invoice ${invNumber} generated successfully.`,
+          type: 'success',
+          read: false
+        }]);
+
+      } catch (err) {
+        console.error('Supabase live transaction insert failed:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      // Offline LocalDB mutations
+      const products = localDB.getCollection<Product>('products');
+      const sales = localDB.getCollection<Sale>('sales');
+      const saleItems = localDB.getCollection<SaleItem>('sale_items');
+      const invoices = localDB.getCollection<Invoice>('invoices');
+      const customers = localDB.getCollection<Customer>('customers');
+      const custTransactions = localDB.getCollection<CustomerTransaction>('customer_transactions');
+
+      for (const line of data.items) {
+        const pIdx = products.findIndex(p => p.id === line.product_id);
+        if (pIdx === -1) continue;
+        products[pIdx].stock = Math.max(0, products[pIdx].stock - line.quantity);
+        products[pIdx].updated_at = new Date().toISOString();
+
+        if (products[pIdx].stock <= products[pIdx].min_stock_alert) {
+          const alerts = localDB.getCollection<Notification>('notifications');
+          alerts.push({
+            id: `not-${Date.now()}-${Math.random()}`,
+            shop_id: shop.id,
+            title: 'Low Stock Alert',
+            message: `${products[pIdx].name} has been depleted to ${products[pIdx].stock} ${products[pIdx].unit} via sale ${saleId}`,
+            type: 'low_stock',
+            read: false,
+            created_at: new Date().toISOString()
+          });
+          localDB.saveCollection('notifications', alerts);
+        }
+      }
+      localDB.saveCollection('products', products);
+
+      if (data.customer_id && remainingUnpaidCharge > 0) {
+        const cIdx = customers.findIndex(c => c.id === data.customer_id);
+        if (cIdx !== -1) {
+          customers[cIdx].balance += remainingUnpaidCharge;
+          custTransactions.push({
+            id: `tx-${Date.now()}`,
+            shop_id: shop.id,
+            customer_id: data.customer_id,
+            type: 'credit',
+            amount: remainingUnpaidCharge,
+            sale_id: saleId,
+            description: `Credit outstanding from checkout sale. PKR ${data.paid_amount} deposit.`,
+            payment_method: null,
+            created_at: new Date().toISOString()
+          });
+        }
+      }
+
+      if (data.customer_id && data.paid_amount > 0) {
+        custTransactions.push({
+          id: `tx-dep-${Date.now()}`,
+          shop_id: shop.id,
+          customer_id: data.customer_id,
+          type: 'payment_received',
+          amount: data.paid_amount,
+          sale_id: saleId,
+          description: `Deposit toward checkout sale`,
+          payment_method: data.payment_method,
           created_at: new Date().toISOString()
         });
       }
-    }
 
-    // Handle initial advance paid or Walk-in cash registers
-    if (data.customer_id && data.paid_amount > 0) {
-      custTransactions.push({
-        id: `tx-dep-${Date.now()}`,
+      localDB.saveCollection('customers', customers);
+      localDB.saveCollection('customer_transactions', custTransactions);
+
+      const newSale: Sale = {
+        id: saleId,
         shop_id: shop.id,
         customer_id: data.customer_id,
-        type: 'payment_received',
-        amount: data.paid_amount,
-        sale_id: saleId,
-        description: `Direct deposit toward checkout sale`,
+        customer_name_manual: data.customer_name_manual,
+        total_amount: itemSubtotal,
+        discount: data.discount,
+        tax_amount: taxAmount,
+        net_amount: netAmount,
+        paid_amount: data.paid_amount,
         payment_method: data.payment_method,
+        payment_status: paymentStatus,
+        created_by: user.id,
+        created_at: new Date().toISOString()
+      };
+      sales.push(newSale);
+      localDB.saveCollection('sales', sales);
+
+      saleItems.push(...saleItemsList);
+      localDB.saveCollection('sale_items', saleItems);
+
+      const invNumber = `INV-${new Date().getFullYear()}-${1000 + sales.length}`;
+      const newInvoice: Invoice = {
+        id: `inv-${Date.now()}`,
+        shop_id: shop.id,
+        sale_id: saleId,
+        invoice_number: invNumber,
+        due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
+        notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
+        created_at: new Date().toISOString()
+      };
+      invoices.push(newInvoice);
+      localDB.saveCollection('invoices', invoices);
+
+      const logs = localDB.getCollection<ActivityLog>('activity_logs');
+      const customerLabel = data.customer_id 
+        ? (customers.find(c => c.id === data.customer_id)?.name || 'Credit Client')
+        : (data.customer_name_manual || 'Walk-in customer');
+      logs.push({
+        id: `act-${Date.now()}`,
+        shop_id: shop.id,
+        user_email: user.email,
+        action: 'Created Transaction',
+        details: `Completed receipt ${invNumber} for ${customerLabel}. Total: PKR ${netAmount.toLocaleString()}`,
         created_at: new Date().toISOString()
       });
+      localDB.saveCollection('activity_logs', logs);
+
+      const notesList = localDB.getCollection<Notification>('notifications');
+      notesList.push({
+        id: `not-sale-${Date.now()}`,
+        shop_id: shop.id,
+        title: 'Receipt Created',
+        message: `Invoice ${invNumber} generated for PKR ${netAmount.toLocaleString()}`,
+        type: 'success',
+        read: false,
+        created_at: new Date().toISOString()
+      });
+      localDB.saveCollection('notifications', notesList);
     }
 
-    // Save customers state
-    localDB.saveCollection('customers', customers);
-    localDB.saveCollection('customer_transactions', custTransactions);
-
-    // 3. Assemble and save the Sale record
-    const newSale: Sale = {
-      id: saleId,
-      shop_id: shop.id,
-      customer_id: data.customer_id,
-      customer_name_manual: data.customer_name_manual,
-      total_amount: itemSubtotal,
-      discount: data.discount,
-      tax_amount: taxAmount,
-      net_amount: netAmount,
-      paid_amount: data.paid_amount,
-      payment_method: data.payment_method,
-      payment_status: paymentStatus,
-      created_by: user.id,
-      created_at: new Date().toISOString()
-    };
-    
-    sales.push(newSale);
-    localDB.saveCollection('sales', sales);
-
-    // Write Sold items list
-    saleItems.push(...saleItemsList);
-    localDB.saveCollection('sale_items', saleItems);
-
-    // 4. Generate the Printable Invoice
-    const invNumber = `INV-${new Date().getFullYear()}-${1000 + sales.length}`;
-    const newInvoice: Invoice = {
-      id: `inv-${Date.now()}`,
-      shop_id: shop.id,
-      sale_id: saleId,
-      invoice_number: invNumber,
-      due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
-      notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in customer cashier payment.`,
-      created_at: new Date().toISOString()
-    };
-    invoices.push(newInvoice);
-    localDB.saveCollection('invoices', invoices);
-
-    // Append to activity loggers
-    const logs = localDB.getCollection<ActivityLog>('activity_logs');
-    const customerLabel = data.customer_id 
-      ? (customers.find(c => c.id === data.customer_id)?.name || 'Credit Client')
-      : (data.customer_name_manual || 'Walk-in buyer');
-    logs.push({
-      id: `act-${Date.now()}`,
-      shop_id: shop.id,
-      user_email: user.email,
-      action: 'POS Transaction Created',
-      details: `Completed receipt ${invNumber} for ${customerLabel}. Grand Total: PKR ${netAmount.toLocaleString()} (${data.payment_method}).`,
-      created_at: new Date().toISOString()
-    });
-    localDB.saveCollection('activity_logs', logs);
-
-    // Dynamic celebration notification
-    const notesList = localDB.getCollection<Notification>('notifications');
-    notesList.push({
-      id: `not-sale-${Date.now()}`,
-      shop_id: shop.id,
-      title: 'Sale Created Successfully',
-      message: `Invoice ${invNumber} generated for PKR ${netAmount.toLocaleString()}`,
-      type: 'success',
-      read: false,
-      created_at: new Date().toISOString()
-    });
-    localDB.saveCollection('notifications', notesList);
-
-    get().refreshData();
+    await get().refreshData();
     return saleId;
   },
 
-  // Customer Management
-  addCustomer: (data) => {
+  addCustomer: async (data) => {
     const shop = get().currentShop;
     if (!shop) return;
 
+    const newCustId = config.isOnline ? crypto.randomUUID() : `cust-${Date.now()}`;
     const newCust: Customer = {
-      id: `cust-${Date.now()}`,
+      id: newCustId,
       shop_id: shop.id,
       name: data.name,
       phone: data.phone,
@@ -766,77 +1274,134 @@ export const useStore = create<AppStore>((set, get) => ({
       created_at: new Date().toISOString()
     };
 
-    const customers = localDB.getCollection<Customer>('customers');
-    customers.push(newCust);
-    localDB.saveCollection('customers', customers);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('customers').insert([newCust]);
+        if (error) throw error;
 
-    if (data.initialBalance !== 0) {
-      const txs = localDB.getCollection<CustomerTransaction>('customer_transactions');
-      txs.push({
-        id: `tx-${Date.now()}`,
-        shop_id: shop.id,
-        customer_id: newCust.id,
-        type: 'opening_balance',
-        amount: Math.abs(data.initialBalance),
-        sale_id: null,
-        description: 'Account Opening Ledger Balance Setter',
-        payment_method: null,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('customer_transactions', txs);
-    }
-
-    get().refreshData();
-  },
-
-  receiveCustomerPayment: ({ customer_id, amount, method, description }) => {
-    const shop = get().currentShop;
-    if (!shop) return;
-
-    const customers = localDB.getCollection<Customer>('customers');
-    const idx = customers.findIndex(c => c.id === customer_id);
-    if (idx !== -1) {
-      // Repay decreases what they owe (decrease balance)
-      customers[idx].balance = Math.max(-1000000, customers[idx].balance - amount);
+        if (data.initialBalance !== 0) {
+          await supabase.from('customer_transactions').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            customer_id: newCust.id,
+            type: 'opening_balance',
+            amount: Math.abs(data.initialBalance),
+            sale_id: null,
+            description: 'Account Opening Ledger Balance Set'
+          }]);
+        }
+      } catch (err) {
+        console.error('Failed to write customer to Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const customers = localDB.getCollection<Customer>('customers');
+      customers.push(newCust);
       localDB.saveCollection('customers', customers);
 
-      const txs = localDB.getCollection<CustomerTransaction>('customer_transactions');
-      txs.push({
-        id: `tx-pay-${Date.now()}`,
-        shop_id: shop.id,
-        customer_id,
-        type: 'payment_received',
-        amount,
-        sale_id: null,
-        description: description || 'Account balance repayment ledger settlement',
-        payment_method: method,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('customer_transactions', txs);
-
-      const alerts = localDB.getCollection<Notification>('notifications');
-      alerts.push({
-        id: `not-${Date.now()}`,
-        shop_id: shop.id,
-        title: 'Ledger Payment Received',
-        message: `Registered payment of PKR ${amount.toLocaleString()} from ${customers[idx].name} (${method})`,
-        type: 'success',
-        read: false,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('notifications', alerts);
-
-      get().refreshData();
+      if (data.initialBalance !== 0) {
+        const txs = localDB.getCollection<CustomerTransaction>('customer_transactions');
+        txs.push({
+          id: `tx-${Date.now()}`,
+          shop_id: shop.id,
+          customer_id: newCust.id,
+          type: 'opening_balance',
+          amount: Math.abs(data.initialBalance),
+          sale_id: null,
+          description: 'Account Opening Ledger Balance Setter',
+          payment_method: null,
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('customer_transactions', txs);
+      }
     }
+
+    await get().refreshData();
   },
 
-  // Supplier Management
-  addSupplier: (data) => {
+  receiveCustomerPayment: async ({ customer_id, amount, method, description }) => {
     const shop = get().currentShop;
     if (!shop) return;
 
+    const matchedCust = get().customers.find(c => c.id === customer_id);
+    if (!matchedCust) return;
+    const computedBal = Math.max(-1000000, matchedCust.balance - amount);
+
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        await supabase.from('customers').update({ balance: computedBal }).eq('id', customer_id);
+        await supabase.from('customer_transactions').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          customer_id,
+          type: 'payment_received',
+          amount,
+          sale_id: null,
+          description: description || 'Account balance repayment ledger settlement',
+          payment_method: method
+        }]);
+
+        await supabase.from('notifications').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          title: 'Customer Payment Received',
+          message: `Credit ledger payment of PKR ${amount.toLocaleString()} received from ${matchedCust.name}`,
+          type: 'success',
+          read: false
+        }]);
+      } catch (err) {
+        console.error('Failed to log client payment to remote DB:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const customers = localDB.getCollection<Customer>('customers');
+      const idx = customers.findIndex(c => c.id === customer_id);
+      if (idx !== -1) {
+        customers[idx].balance = computedBal;
+        localDB.saveCollection('customers', customers);
+
+        const txs = localDB.getCollection<CustomerTransaction>('customer_transactions');
+        txs.push({
+          id: `tx-pay-${Date.now()}`,
+          shop_id: shop.id,
+          customer_id,
+          type: 'payment_received',
+          amount,
+          sale_id: null,
+          description: description || 'Account balance repayment ledger settlement',
+          payment_method: method,
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('customer_transactions', txs);
+
+        const alerts = localDB.getCollection<Notification>('notifications');
+        alerts.push({
+          id: `not-${Date.now()}`,
+          shop_id: shop.id,
+          title: 'Ledger Payment Received',
+          message: `Registered payment of PKR ${amount.toLocaleString()} from ${customers[idx].name} (${method})`,
+          type: 'success',
+          read: false,
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('notifications', alerts);
+      }
+    }
+
+    await get().refreshData();
+  },
+
+  addSupplier: async (data) => {
+    const shop = get().currentShop;
+    if (!shop) return;
+
+    const newSupId = config.isOnline ? crypto.randomUUID() : `sup-${Date.now()}`;
     const newSup: Supplier = {
-      id: `sup-${Date.now()}`,
+      id: newSupId,
       shop_id: shop.id,
       name: data.name,
       phone: data.phone,
@@ -845,165 +1410,306 @@ export const useStore = create<AppStore>((set, get) => ({
       created_at: new Date().toISOString()
     };
 
-    const suppliers = localDB.getCollection<Supplier>('suppliers');
-    suppliers.push(newSup);
-    localDB.saveCollection('suppliers', suppliers);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('suppliers').insert([newSup]);
+        if (error) throw error;
 
-    if (data.initialBalance !== 0) {
-      const txs = localDB.getCollection<SupplierTransaction>('supplier_transactions');
-      txs.push({
-        id: `sup-tx-${Date.now()}`,
-        shop_id: shop.id,
-        supplier_id: newSup.id,
-        type: 'grain_purchased',
-        amount: Math.abs(data.initialBalance),
-        description: 'Account Opening Ledger Balance (Raw Grain Stock Debt)',
-        payment_method: null,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('supplier_transactions', txs);
+        if (data.initialBalance !== 0) {
+          await supabase.from('supplier_transactions').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            supplier_id: newSup.id,
+            type: 'grain_purchased',
+            amount: Math.abs(data.initialBalance),
+            description: 'Opening balance wheat grains invoice bag charges.'
+          }]);
+        }
+      } catch (err) {
+        console.error('Failed to create Supplier on Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const suppliers = localDB.getCollection<Supplier>('suppliers');
+      suppliers.push(newSup);
+      localDB.saveCollection('suppliers', suppliers);
+
+      if (data.initialBalance !== 0) {
+        const txs = localDB.getCollection<SupplierTransaction>('supplier_transactions');
+        txs.push({
+          id: `sup-tx-${Date.now()}`,
+          shop_id: shop.id,
+          supplier_id: newSup.id,
+          type: 'grain_purchased',
+          amount: Math.abs(data.initialBalance),
+          description: 'Account Opening Ledger Balance (Raw Grain Stock Debt)',
+          payment_method: null,
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('supplier_transactions', txs);
+      }
     }
 
-    get().refreshData();
+    await get().refreshData();
   },
 
-  makeSupplierPayment: ({ supplier_id, amount, method, description }) => {
+  makeSupplierPayment: async ({ supplier_id, amount, method, description }) => {
     const shop = get().currentShop;
     if (!shop) return;
 
-    const suppliers = localDB.getCollection<Supplier>('suppliers');
-    const idx = suppliers.findIndex(s => s.id === supplier_id);
-    if (idx !== -1) {
-      // Payment reduces what we owe them
-      suppliers[idx].balance = Math.max(0, suppliers[idx].balance - amount);
-      localDB.saveCollection('suppliers', suppliers);
+    const targetSupplier = get().suppliers.find(s => s.id === supplier_id);
+    if (!targetSupplier) return;
+    const computedBal = Math.max(0, targetSupplier.balance - amount);
 
-      const txs = localDB.getCollection<SupplierTransaction>('supplier_transactions');
-      txs.push({
-        id: `sup-tx-pay-${Date.now()}`,
-        shop_id: shop.id,
-        supplier_id,
-        type: 'payment_made',
-        amount,
-        description: description || 'Direct balance checkout repayment',
-        payment_method: method,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('supplier_transactions', txs);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        await supabase.from('suppliers').update({ balance: computedBal }).eq('id', supplier_id);
+        await supabase.from('supplier_transactions').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          supplier_id,
+          type: 'payment_made',
+          amount,
+          description: description || 'Repayment to grain supplier',
+          payment_method: method
+        }]);
 
-      // Create an expense entry for this payout since it is grain business outflow
-      const expenses = localDB.getCollection<any>('expenses');
-      expenses.push({
-        id: `exp-${Date.now()}`,
-        shop_id: shop.id,
-        category: 'Maintenance',
-        amount,
-        description: `Grain Payout to Supplier ${suppliers[idx].name}: ${description}`,
-        date: new Date().toISOString().split('T')[0],
-        created_by: get().currentUser?.id || 'sys',
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('expenses', expenses);
+        // Supplier payout as grain business cost
+        await supabase.from('expenses').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          category: 'Maintenance',
+          amount,
+          description: `Grain Payout to Supplier ${targetSupplier.name}: ${description}`,
+          date: new Date().toISOString().split('T')[0],
+          created_by: get().currentUser?.id || 'sys'
+        }]);
+      } catch (err) {
+        console.error('Failed to submit supplier payment on live DB:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const suppliers = localDB.getCollection<Supplier>('suppliers');
+      const idx = suppliers.findIndex(s => s.id === supplier_id);
+      if (idx !== -1) {
+        suppliers[idx].balance = computedBal;
+        localDB.saveCollection('suppliers', suppliers);
 
-      get().refreshData();
+        const txs = localDB.getCollection<SupplierTransaction>('supplier_transactions');
+        txs.push({
+          id: `sup-tx-pay-${Date.now()}`,
+          shop_id: shop.id,
+          supplier_id,
+          type: 'payment_made',
+          amount,
+          description: description || 'Direct balance checkout repayment',
+          payment_method: method,
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('supplier_transactions', txs);
+
+        const expenses = localDB.getCollection<any>('expenses');
+        expenses.push({
+          id: `exp-${Date.now()}`,
+          shop_id: shop.id,
+          category: 'Maintenance',
+          amount,
+          description: `Grain Payout to Supplier ${suppliers[idx].name}: ${description}`,
+          date: new Date().toISOString().split('T')[0],
+          created_by: get().currentUser?.id || 'sys',
+          created_at: new Date().toISOString()
+        });
+        localDB.saveCollection('expenses', expenses);
+      }
     }
+
+    await get().refreshData();
   },
 
-  // Expenses CRUD
-  addExpense: (data) => {
+  addExpense: async (data) => {
     const shop = get().currentShop;
     if (!shop) return;
 
     const newExp: Expense = {
       ...data,
-      id: `exp-${Date.now()}`,
+      id: config.isOnline ? crypto.randomUUID() : `exp-${Date.now()}`,
       shop_id: shop.id,
       created_by: get().currentUser?.id || 'sys',
       created_at: new Date().toISOString()
     };
 
-    const expenses = localDB.getCollection<Expense>('expenses');
-    expenses.push(newExp);
-    localDB.saveCollection('expenses', expenses);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('expenses').insert([newExp]);
+        if (error) throw error;
+      } catch (err) {
+        console.error('Failed to log expense on Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const expenses = localDB.getCollection<Expense>('expenses');
+      expenses.push(newExp);
+      localDB.saveCollection('expenses', expenses);
+    }
 
-    get().refreshData();
+    await get().refreshData();
   },
 
-  deleteExpense: (id) => {
-    const expenses = localDB.getCollection<Expense>('expenses').filter(e => e.id !== id);
-    localDB.saveCollection('expenses', expenses);
-    get().refreshData();
+  deleteExpense: async (id) => {
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('expenses').delete().eq('id', id);
+        if (error) throw error;
+      } catch (err) {
+        console.error('Failed to delete expense on Supabase:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const expenses = localDB.getCollection<Expense>('expenses').filter(e => e.id !== id);
+      localDB.saveCollection('expenses', expenses);
+    }
+
+    await get().refreshData();
   },
 
-  // Notifications management
-  clearNotification: (id) => {
-    const notifications = localDB.getCollection<Notification>('notifications').filter(n => n.id !== id);
-    localDB.saveCollection('notifications', notifications);
-    get().refreshData();
+  clearNotification: async (id) => {
+    if (config.isOnline && supabase) {
+      try {
+        await supabase.from('notifications').delete().eq('id', id);
+      } catch (err) {
+        console.error('Failed to clear notifications:', err);
+      }
+    } else {
+      const notifications = localDB.getCollection<Notification>('notifications').filter(n => n.id !== id);
+      localDB.saveCollection('notifications', notifications);
+    }
+    await get().refreshData();
   },
 
-  markAllNotificationsRead: () => {
-    const notifications = localDB.getCollection<Notification>('notifications').map(n => ({ ...n, read: true }));
-    localDB.saveCollection('notifications', notifications);
-    get().refreshData();
+  markAllNotificationsRead: async () => {
+    if (config.isOnline && supabase) {
+      try {
+        await supabase.from('notifications').update({ read: true }).eq('shop_id', get().currentShop?.id);
+      } catch (err) {
+        console.error('Failed to read all notifications:', err);
+      }
+    } else {
+      const notifications = localDB.getCollection<Notification>('notifications').map(n => ({ ...n, read: true }));
+      localDB.saveCollection('notifications', notifications);
+    }
+    await get().refreshData();
   },
 
-  // Settings and Profile edits
-  updateSettings: (updatedFields) => {
-    const current = localDB.getCollection<any>('settings') || {};
-    const merged = { ...current, ...updatedFields };
-    localStorage.setItem('flour_db_settings', JSON.stringify(merged));
-    
-    const logs = localDB.getCollection<ActivityLog>('activity_logs');
-    logs.push({
-      id: `act-${Date.now()}`,
-      shop_id: get().currentShop?.id || '',
-      user_email: get().currentUser?.email || 'admin',
-      action: 'Settings Modified',
-      details: 'Updated global system rules, tax configuration, printer widths, or alert parameters.',
-      created_at: new Date().toISOString()
-    });
-    localDB.saveCollection('activity_logs', logs);
-
-    get().refreshData();
-  },
-
-  updateShopProfile: (data) => {
+  updateSettings: async (updatedFields) => {
     const shop = get().currentShop;
     if (!shop) return;
 
-    const shops = localDB.getCollection<Shop>('shops');
-    const idx = shops.findIndex(s => s.id === shop.id);
-    if (idx !== -1) {
-      const merged = { ...shops[idx], ...data, updated_at: new Date().toISOString() };
-      shops[idx] = merged;
-      localDB.saveCollection('shops', shops);
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const current = get().settings || {};
+        const merged = { shop_id: shop.id, ...current, ...updatedFields };
+        const { error } = await supabase.from('settings').upsert([merged]);
+        if (error) throw error;
+
+        await supabase.from('activity_logs').insert([{
+          id: crypto.randomUUID(),
+          shop_id: shop.id,
+          user_email: get().currentUser?.email || 'admin',
+          action: 'Settings Modified',
+          details: 'Updated global system rules, tax codes, or SMS parameters on the live database.'
+        }]);
+      } catch (err) {
+        console.error('Failed to upsert settings to Supabase settings table:', err);
+      } finally {
+        set({ loading: false });
+      }
+    } else {
+      const current = localDB.getCollection<any>('settings') || {};
+      const merged = { ...current, ...updatedFields };
+      localStorage.setItem('flour_db_settings', JSON.stringify(merged));
       
-      set({ currentShop: merged });
-      get().refreshData();
+      const logs = localDB.getCollection<ActivityLog>('activity_logs');
+      logs.push({
+        id: `act-${Date.now()}`,
+        shop_id: get().currentShop?.id || '',
+        user_email: get().currentUser?.email || 'admin',
+        action: 'Settings Modified',
+        details: 'Updated global system rules.',
+        created_at: new Date().toISOString()
+      });
+      localDB.saveCollection('activity_logs', logs);
     }
+
+    await get().refreshData();
   },
 
-  toggleShopStatus: (shopId) => {
-    const shops = localDB.getCollection<Shop>('shops');
-    const idx = shops.findIndex(s => s.id === shopId);
-    if (idx !== -1) {
-      const currentStatus = shops[idx].subscription_status;
-      shops[idx].subscription_status = currentStatus === 'active' ? 'suspended' : 'active';
-      localDB.saveCollection('shops', shops);
-      
-      set({ allShops: shops });
-      if (get().currentShop?.id === shopId) {
-        set({ currentShop: shops[idx] });
+  updateShopProfile: async (data) => {
+    const shop = get().currentShop;
+    if (!shop) return;
+
+    const merged = { ...shop, ...data, updated_at: new Date().toISOString() };
+
+    if (config.isOnline && supabase) {
+      set({ loading: true });
+      try {
+        const { error } = await supabase.from('shops').update(data).eq('id', shop.id);
+        if (error) throw error;
+        set({ currentShop: merged });
+      } catch (err) {
+        console.error('Failed to modify shop on Supabase:', err);
+      } finally {
+        set({ loading: false });
       }
-      get().refreshData();
+    } else {
+      const shops = localDB.getCollection<Shop>('shops');
+      const idx = shops.findIndex(s => s.id === shop.id);
+      if (idx !== -1) {
+        shops[idx] = merged;
+        localDB.saveCollection('shops', shops);
+        set({ currentShop: merged });
+      }
     }
+
+    await get().refreshData();
+  },
+
+  toggleShopStatus: async (shopId) => {
+    if (config.isOnline && supabase) {
+      try {
+        const shop = get().allShops.find(s => s.id === shopId);
+        if (!shop) return;
+        const newStatus = shop.subscription_status === 'active' ? 'suspended' : 'active';
+        await supabase.from('shops').update({ subscription_status: newStatus }).eq('id', shopId);
+      } catch (err) {
+        console.error('Failed to suspend shop status on Supabase:', err);
+      }
+    } else {
+      const shops = localDB.getCollection<Shop>('shops');
+      const idx = shops.findIndex(s => s.id === shopId);
+      if (idx !== -1) {
+        const currentStatus = shops[idx].subscription_status;
+        shops[idx].subscription_status = currentStatus === 'active' ? 'suspended' : 'active';
+        localDB.saveCollection('shops', shops);
+        set({ allShops: shops });
+        if (get().currentShop?.id === shopId) {
+          set({ currentShop: shops[idx] });
+        }
+      }
+    }
+    await get().refreshData();
   },
 
   /**
    * INTERACTIVE REALTIME SIMULATION
-   * Simulates remote cashier actions processing sales and adjusting stock
-   * to showcase real-time dashboard UI updates beautifully!
    */
   triggerRealtimeSale: () => {
     const shop = get().currentShop;
@@ -1012,11 +1718,9 @@ export const useStore = create<AppStore>((set, get) => ({
     const products = get().products;
     if (products.length === 0) return;
 
-    // Pick a random product
     const randomProduct = products[Math.floor(Math.random() * products.length)];
-    const rollQuantity = Math.floor(Math.random() * 15) + 1; // 1 to 15 units
+    const rollQuantity = Math.floor(Math.random() * 15) + 1;
 
-    // Prepare line item
     const mockSaleItem = {
       product_id: randomProduct.id,
       quantity: Math.min(rollQuantity, randomProduct.stock > 0 ? randomProduct.stock : 25),
@@ -1035,7 +1739,6 @@ export const useStore = create<AppStore>((set, get) => ({
 
   startRealtimeSimulation: () => {
     const interval = setInterval(() => {
-      // 15% chance of spawning automatic transactions every 15 seconds
       if (Math.random() < 0.35 && get().currentUser && get().currentShop) {
         get().triggerRealtimeSale();
       }

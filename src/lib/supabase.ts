@@ -9,8 +9,9 @@ import { createClient } from '@supabase/supabase-js';
 
 // Retrieve credentials from environment variables or setting overrides
 const getSupabaseConfig = () => {
-  const envUrl = import.meta.env.VITE_SUPABASE_URL;
-  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const metaEnv = (import.meta as any).env || {};
+  const envUrl = metaEnv.VITE_SUPABASE_URL;
+  const envKey = metaEnv.VITE_SUPABASE_ANON_KEY;
   
   // Also check local storage for runtime customization in the UI
   const storedUrl = localStorage.getItem('supa_url_override');

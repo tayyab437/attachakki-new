@@ -55,11 +55,14 @@ export default function SettingsView() {
   };
 
   const sqlSchemaText = `-- ====================================================
--- SUPABASE 20-TABLE CHAKKI SAAS SCHEMA
+-- SUPABASE FULL 16-TABLE CHAKKI SAAS SCHEMA
 -- ====================================================
 
+-- Enable pgcrypto extension for gen_random_uuid() if needed
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 -- 1. Create Shops Table
-CREATE TABLE shops (
+CREATE TABLE IF NOT EXISTS shops (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   logo_url TEXT,
@@ -73,31 +76,251 @@ CREATE TABLE shops (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Enable Row Level Security (RLS) on all tables
-ALTER TABLE shops ENABLE ROW LEVEL SECURITY;
+-- 2. Create Profiles Table (User Accounts)
+CREATE TABLE IF NOT EXISTS profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  email TEXT NOT NULL UNIQUE,
+  full_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'owner',
+  avatar_url TEXT,
+  is_verified BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 
--- 2. Create products table
-CREATE TABLE products (
+-- 3. Create Categories Table
+CREATE TABLE IF NOT EXISTS categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  sku TEXT UNIQUE NOT NULL,
-  unit TEXT CHECK (unit IN ('KG', 'Bag', 'Maund', 'Ton')),
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 4. Create Products Table
+CREATE TABLE IF NOT EXISTS products (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  unit TEXT Check (unit IN ('KG', 'Bag', 'Maund', 'Ton')),
   cost_price NUMERIC NOT NULL,
   sale_price NUMERIC NOT NULL,
   stock NUMERIC DEFAULT 0,
   min_stock_alert NUMERIC DEFAULT 10,
   image_url TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (shop_id, sku)
 );
 
-ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+-- 5. Create Inventory Logs Table
+CREATE TABLE IF NOT EXISTS inventory_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  product_id UUID REFERENCES products(id) ON DELETE CASCADE,
+  type TEXT CHECK (type IN ('stock_in', 'stock_out', 'adjustment', 'wastage')),
+  quantity NUMERIC NOT NULL,
+  unit TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 
--- 3. Row level policies (Only access shop owner data)
-CREATE POLICY shop_owners_access ON products
-  FOR ALL TO authenticated
-  USING (shop_id = (SELECT shop_id FROM profiles WHERE id = auth.uid()));
+-- 6. Create Customers Table
+CREATE TABLE IF NOT EXISTS customers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  phone TEXT,
+  email TEXT,
+  balance NUMERIC DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 7. Create Customer Transactions Table
+CREATE TABLE IF NOT EXISTS customer_transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  customer_id UUID REFERENCES customers(id) ON DELETE CASCADE,
+  type TEXT CHECK (type IN ('credit', 'payment_received', 'opening_balance')),
+  amount NUMERIC NOT NULL,
+  sale_id TEXT,
+  description TEXT,
+  payment_method TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 8. Create Suppliers Table
+CREATE TABLE IF NOT EXISTS suppliers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  phone TEXT,
+  company TEXT,
+  balance NUMERIC DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 9. Create Supplier Transactions Table
+CREATE TABLE IF NOT EXISTS supplier_transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  supplier_id UUID REFERENCES suppliers(id) ON DELETE CASCADE,
+  type TEXT CHECK (type IN ('grain_purchased', 'payment_made')),
+  amount NUMERIC NOT NULL,
+  description TEXT,
+  payment_method TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 10. Create Sales Table
+CREATE TABLE IF NOT EXISTS sales (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  customer_id UUID REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name_manual TEXT,
+  total_amount NUMERIC NOT NULL,
+  discount NUMERIC DEFAULT 0,
+  tax_amount NUMERIC DEFAULT 0,
+  net_amount NUMERIC NOT NULL,
+  paid_amount NUMERIC NOT NULL,
+  payment_method TEXT NOT NULL,
+  payment_status TEXT CHECK (payment_status IN ('paid', 'partially_paid', 'unpaid')),
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 11. Create Sale Items Table
+CREATE TABLE IF NOT EXISTS sale_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  sale_id UUID REFERENCES sales(id) ON DELETE CASCADE,
+  product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+  product_name TEXT NOT NULL,
+  quantity NUMERIC NOT NULL,
+  unit TEXT NOT NULL,
+  unit_price NUMERIC NOT NULL,
+  cost_price_at_sale NUMERIC NOT NULL,
+  total NUMERIC NOT NULL
+);
+
+-- 12. Create Invoices Table
+CREATE TABLE IF NOT EXISTS invoices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  sale_id UUID REFERENCES sales(id) ON DELETE CASCADE,
+  invoice_number TEXT NOT NULL,
+  due_date TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 13. Create Expenses Table
+CREATE TABLE IF NOT EXISTS expenses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  category TEXT NOT NULL,
+  amount NUMERIC NOT NULL,
+  description TEXT,
+  date TEXT NOT NULL,
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 14. Create Notifications Table
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  type TEXT NOT NULL,
+  read BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 15. Create Activity Logs Table
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID REFERENCES shops(id) ON DELETE CASCADE,
+  user_email TEXT,
+  action TEXT NOT NULL,
+  details TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 16. Create Settings Table
+CREATE TABLE IF NOT EXISTS settings (
+  shop_id UUID PRIMARY KEY REFERENCES shops(id) ON DELETE CASCADE,
+  theme TEXT NOT NULL DEFAULT 'light',
+  language TEXT NOT NULL DEFAULT 'en',
+  print_size TEXT NOT NULL DEFAULT 'thermal_80mm',
+  enable_whatsapp_alert BOOLEAN DEFAULT true,
+  sms_api_key TEXT,
+  tax_registered BOOLEAN DEFAULT true,
+  tax_id TEXT
+);
+
+-- ====================================================
+-- SEED INITIAL DATA FOR THE DEFAULT SHOP OWNED BY ac.repair.in.dubai3@gmail.com
+-- ====================================================
+
+-- Seed primary shop
+INSERT INTO shops (id, name, logo_url, phone, address, currency, tax_rate, invoice_footer, subscription_status)
+VALUES (
+  '11111111-1111-1111-1111-111111111111',
+  'Supreme Chakki & Grain Mills',
+  NULL,
+  '+92 300 1234567',
+  'Main Bazaar Road, Block 4, Lahore',
+  'PKR',
+  5,
+  'Thank you for your business! Fresh flour is health.',
+  'trial'
+) ON CONFLICT (id) DO NOTHING;
+
+-- Seed default owner profile
+INSERT INTO profiles (id, shop_id, email, full_name, role, avatar_url, is_verified)
+VALUES (
+  '22222222-2222-2222-2222-222222222222',
+  '11111111-1111-1111-1111-111111111111',
+  'ac.repair.in.dubai3@gmail.com',
+  'M. Ibrahim Khan (Chakki Owner)',
+  'owner',
+  NULL,
+  TRUE
+) ON CONFLICT (email) DO NOTHING;
+
+-- Seed categories
+INSERT INTO categories (id, shop_id, name, description) VALUES
+  ('11111111-1111-1111-1111-000000000001', '11111111-1111-1111-1111-111111111111', 'Premium Atta', 'Fresh stone-ground wheat flour'),
+  ('11111111-1111-1111-1111-000000000002', '11111111-1111-1111-1111-111111111111', 'Fine Flour & Maida', 'Refined soft flour'),
+  ('11111111-1111-1111-1111-000000000003', '11111111-1111-1111-1111-111111111111', 'Secondary Grains', 'Corn, Bran, Barley and Millets'),
+  ('11111111-1111-1111-1111-000000000004', '11111111-1111-1111-1111-111111111111', 'By-products & Feed', 'Chokar / Wheat bran feed')
+ON CONFLICT (id) DO NOTHING;
+
+-- Seed products
+INSERT INTO products (id, shop_id, category_id, name, sku, unit, cost_price, sale_price, stock, min_stock_alert) VALUES
+  ('11111111-1111-1111-1111-000000000101', '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-000000000001', 'Premium Desi Chakki Atta', 'DESI-ATTA-001', 'KG', 110, 135, 450, 100),
+  ('11111111-1111-1111-1111-000000000102', '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-000000000002', 'Fine White Maida', 'WHITE-MAID-002', 'KG', 125, 155, 220, 50),
+  ('11111111-1111-1111-1111-000000000103', '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-000000000003', 'Wheat Grain Sacks (Sargodha Special)', 'WHT-BAG-50KG', 'Bag', 4800, 5200, 12, 5),
+  ('11111111-1111-1111-1111-000000000104', '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-000000000004', 'Chokar (Wheat Bran Feed)', 'CHOKAR-004', 'Bag', 1600, 1950, 28, 10),
+  ('11111111-1111-1111-1111-000000000105', '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-000000000001', 'Makki (Corn) Atta ground', 'CORN-ATTA-005', 'KG', 90, 120, 35, 50)
+ON CONFLICT (id) DO NOTHING;
+
+-- Seed initial settings
+INSERT INTO settings (shop_id, theme, language, print_size, enable_whatsapp_alert, sms_api_key, tax_registered, tax_id)
+VALUES (
+  '11111111-1111-1111-1111-111111111111',
+  'light',
+  'en',
+  'thermal_80mm',
+  TRUE,
+  '',
+  TRUE,
+  'NTN-82910-82B-9'
+) ON CONFLICT (shop_id) DO NOTHING;
 `;
 
   const copyToClipboard = () => {

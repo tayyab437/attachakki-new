@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
-  Package, Plus, Search, Tag, Trash2, Edit2, AlertCircle, Sparkles, CloseSquare, 
+  Package, Plus, Search, Tag, Trash2, Edit2, AlertCircle, Sparkles, 
   Settings, CheckCircle, Scale, Coins, Info 
 } from 'lucide-react';
 import { Product } from '../types';
