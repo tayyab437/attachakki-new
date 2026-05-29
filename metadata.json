@@ -1,0 +1,8 @@
+{
+  "name": "Flour Shop SaaS",
+  "description": "A high-performance, real-time SaaS platform for flour mills, Atta Chakkis, and grain retail businesses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
