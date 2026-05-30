@@ -66,7 +66,7 @@ interface AppStore {
   addProduct: (product: Omit<Product, 'id' | 'shop_id' | 'created_at' | 'updated_at'>) => Promise<void>;
   updateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
-  addCategory: (name: string, description: string | null) => Promise<void>;
+  addCategory: (name: string, description: string | null) => Promise<any>;
 
   adjustInventory: (data: {
     product_id: string;
@@ -373,7 +373,7 @@ export const useStore = create<AppStore>((set, get) => ({
           
           // Seed defaults
           const seedCatId = '11111111-1111-1111-1111-000000000001';
-          await supabase.from('categories').insert([
+          await supabase.from('product_categories').insert([
             { id: seedCatId, shop_id: defaultShopId, name: 'Premium Atta', description: 'Fresh stone-ground wheat flour' }
           ]);
 
@@ -449,8 +449,9 @@ export const useStore = create<AppStore>((set, get) => ({
       // Fetch datasets in parallel from Live Supabase
       try {
         const fetchTable = async (tableName: string) => {
+          const dbTableName = tableName === 'categories' ? 'product_categories' : tableName;
           const { data, error } = await supabase
-            .from(tableName)
+            .from(dbTableName)
             .select('*')
             .eq('shop_id', shop.id);
           if (error) {
@@ -592,14 +593,14 @@ export const useStore = create<AppStore>((set, get) => ({
         }
 
         const liveCatId = crypto.randomUUID();
-        const { error: catErr } = await supabase.from('categories').insert([{
+        const { error: catErr } = await supabase.from('product_categories').insert([{
           id: liveCatId,
           shop_id: newShopId,
           name: 'Premium Ground Flour',
           description: 'Finely milled wheat flour options'
         }]);
         if (catErr) {
-          (catErr as any).tableName = 'categories';
+          (catErr as any).tableName = 'product_categories';
           throw catErr;
         }
 
@@ -1118,7 +1119,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
   addCategory: async (name, description) => {
     const shop = get().currentShop;
-    if (!shop) return;
+    if (!shop) return null;
 
     const newCat = {
       id: config.isOnline ? crypto.randomUUID() : `cat-${Date.now()}`,
@@ -1135,7 +1136,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     if (config.isOnline && supabase) {
       (async () => {
         try {
-          const { error } = await supabase.from('categories').insert([newCat]);
+          const { error } = await supabase.from('product_categories').insert([newCat]);
           if (error) throw error;
         } catch (err) {
           console.error('Failed to load category to live DB:', err);
@@ -1149,6 +1150,8 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       localDB.saveCollection('categories', categories);
       get().refreshData();
     }
+
+    return newCat;
   },
 
   adjustInventory: async ({ product_id, type, quantity, reason }) => {
@@ -1338,17 +1341,18 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     if (config.isOnline && supabase) {
       (async () => {
         try {
-          const promises: Promise<any>[] = [];
+          // Stage 1: Update independent tables (Products, Customers)
+          const prepPromises: Promise<any>[] = [];
 
           // Decrease stock on products and record notifications
           for (const line of data.items) {
             const prod = currentProducts.find(p => p.id === line.product_id);
             if (!prod) continue;
             const finalStock = Math.max(0, prod.stock - line.quantity);
-            promises.push(supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id));
+            prepPromises.push(supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id));
             
             if (finalStock <= prod.min_stock_alert) {
-              promises.push(supabase.from('notifications').insert([{
+              prepPromises.push(supabase.from('notifications').insert([{
                 id: crypto.randomUUID(),
                 shop_id: shop.id,
                 title: 'Low Stock Alert',
@@ -1365,8 +1369,35 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
             if (activeCustomer) {
               if (remainingUnpaidCharge > 0) {
                 const updatedBal = activeCustomer.balance + remainingUnpaidCharge;
-                promises.push(supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id));
-                promises.push(supabase.from('customer_transactions').insert([{
+                prepPromises.push(supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id));
+              }
+            }
+          }
+
+          if (prepPromises.length > 0) {
+            await Promise.all(prepPromises);
+          }
+
+          // Stage 2: Insert the Sale record (parent table referenced by children)
+          const { error: saleErr } = await supabase.from('sales').insert([newSale]);
+          if (saleErr) {
+            throw saleErr;
+          }
+
+          // Stage 3: Insert dependent child records referencing sales(id)
+          const childPromises: Promise<any>[] = [];
+
+          if (saleItemsList.length > 0) {
+            childPromises.push(supabase.from('sale_items').insert(saleItemsList));
+          }
+          childPromises.push(supabase.from('invoices').insert([newInvoice]));
+
+          // Insert customer transactions linked to the sale
+          if (data.customer_id) {
+            const activeCustomer = currentCustomers.find(c => c.id === data.customer_id);
+            if (activeCustomer) {
+              if (remainingUnpaidCharge > 0) {
+                childPromises.push(supabase.from('customer_transactions').insert([{
                   id: crypto.randomUUID(),
                   shop_id: shop.id,
                   customer_id: data.customer_id,
@@ -1377,7 +1408,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
                 }]));
               }
               if (data.paid_amount > 0) {
-                promises.push(supabase.from('customer_transactions').insert([{
+                childPromises.push(supabase.from('customer_transactions').insert([{
                   id: crypto.randomUUID(),
                   shop_id: shop.id,
                   customer_id: data.customer_id,
@@ -1391,18 +1422,11 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
             }
           }
 
-          // Insert Sale, Items, Invoice, Log, Notifs
-          promises.push(supabase.from('sales').insert([newSale]));
-          if (saleItemsList.length > 0) {
-            promises.push(supabase.from('sale_items').insert(saleItemsList));
-          }
-          promises.push(supabase.from('invoices').insert([newInvoice]));
-
           const customerLabel = data.customer_id 
             ? (currentCustomers.find(c => c.id === data.customer_id)?.name || 'Credit Account')
             : (data.customer_name_manual || 'Walk-in customer');
 
-          promises.push(supabase.from('activity_logs').insert([{
+          childPromises.push(supabase.from('activity_logs').insert([{
             id: crypto.randomUUID(),
             shop_id: shop.id,
             user_email: user.email,
@@ -1410,7 +1434,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
             details: `Invoice ${invNumber} generated for ${customerLabel}. Paid: PKR ${data.paid_amount.toLocaleString()}.`
           }]));
 
-          promises.push(supabase.from('notifications').insert([{
+          childPromises.push(supabase.from('notifications').insert([{
             id: crypto.randomUUID(),
             shop_id: shop.id,
             title: 'POS Sale Executed',
@@ -1419,8 +1443,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
             read: false
           }]));
 
-          // Run concurrently in background
-          await Promise.all(promises);
+          await Promise.all(childPromises);
         } catch (err) {
           console.error('Supabase live transaction insert failed:', err);
         } finally {

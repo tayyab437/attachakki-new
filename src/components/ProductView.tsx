@@ -30,6 +30,10 @@ export default function ProductView() {
   const [newCatName, setNewCatName] = useState('');
   const [newCatDesc, setNewCatDesc] = useState('');
 
+  // Inline category creation states
+  const [addingInlineCat, setAddingInlineCat] = useState(false);
+  const [inlineCatName, setInlineCatName] = useState('');
+
   // Search filtered products
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
@@ -89,12 +93,17 @@ export default function ProductView() {
     setStock(50);
     setMinStockAlert(20);
     setShowForm(false);
+    setAddingInlineCat(false);
+    setInlineCatName('');
   };
 
-  const handleCreateCategory = (e: React.FormEvent) => {
+  const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCatName.trim()) return;
-    addCategory(newCatName, newCatDesc);
+    const res = await addCategory(newCatName, newCatDesc);
+    if (res && res.id) {
+      setCategoryId(res.id);
+    }
     setNewCatName('');
     setNewCatDesc('');
     setShowCatForm(false);
@@ -236,17 +245,58 @@ export default function ProductView() {
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Category Segment</label>
-              <select
-                value={category_id}
-                onChange={(e) => setCategoryId(e.target.value)}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
-              >
-                <option value="">Uncategorized</option>
-                {categories.map(cat => (
-                  <option key={cat.id} value={cat.id}>{cat.name}</option>
-                ))}
-              </select>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Category Segment</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddingInlineCat(!addingInlineCat);
+                    setInlineCatName('');
+                  }}
+                  className="text-[10px] text-orange-600 hover:text-orange-700 font-extrabold flex items-center gap-0.5 whitespace-nowrap cursor-pointer hover:underline"
+                >
+                  {addingInlineCat ? 'Cancel' : '+ New Category'}
+                </button>
+              </div>
+
+              {!addingInlineCat ? (
+                <select
+                  value={category_id}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                  className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                >
+                  <option value="">Uncategorized</option>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.id}>{cat.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    required
+                    placeholder="New category..."
+                    value={inlineCatName}
+                    onChange={(e) => setInlineCatName(e.target.value)}
+                    className="flex-1 text-xs px-2.5 py-2 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!inlineCatName.trim()) return;
+                      const res = await addCategory(inlineCatName, 'Created via catalog form');
+                      if (res && res.id) {
+                        setCategoryId(res.id);
+                      }
+                      setAddingInlineCat(false);
+                      setInlineCatName('');
+                    }}
+                    className="px-3 bg-orange-600 hover:bg-orange-700 font-extrabold text-xs text-white rounded-xl cursor-pointer"
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>
