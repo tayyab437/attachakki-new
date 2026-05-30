@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { localDB, supabase as rawSupabase, config } from './supabase';
+import { localDB, supabase as rawSupabase, config, initSupabase } from './supabase';
 import { 
   Shop, Profile, Product, InventoryLog, Customer, CustomerTransaction, 
   Supplier, SupplierTransaction, Sale, SaleItem, Invoice, Expense, 
@@ -340,6 +340,11 @@ export const useStore = create<AppStore>((set, get) => ({
 
   initStore: async () => {
     const savedEmail = localStorage.getItem('logged_in_user_email') || 'ac.repair.in.dubai3@gmail.com';
+    
+    // Resolve dynamic universal database configuration from the container's environment secrets
+    if (typeof initSupabase === 'function') {
+      await initSupabase();
+    }
     
     // Check if the custom credentials represent a live database
     if (config.isOnline && supabase) {
@@ -2083,8 +2088,17 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       try {
         const shop = get().allShops.find(s => s.id === shopId);
         if (!shop) return;
-        const newStatus = shop.subscription_status === 'active' ? 'suspended' : 'active';
+        const newStatus: 'trial' | 'active' | 'suspended' = shop.subscription_status === 'active' ? 'suspended' : 'active';
         await supabase.from('shops').update({ subscription_status: newStatus }).eq('id', shopId);
+        
+        // Update allShops state in memory so the toggle works instantly
+        const updatedShops = get().allShops.map(s => s.id === shopId ? { ...s, subscription_status: newStatus } : s);
+        set({ allShops: updatedShops });
+        
+        if (get().currentShop?.id === shopId) {
+          const updatedCurrentShop = updatedShops.find(s => s.id === shopId) || null;
+          set({ currentShop: updatedCurrentShop });
+        }
       } catch (err) {
         console.error('Failed to suspend shop status on Supabase:', err);
       }
@@ -2093,7 +2107,8 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       const idx = shops.findIndex(s => s.id === shopId);
       if (idx !== -1) {
         const currentStatus = shops[idx].subscription_status;
-        shops[idx].subscription_status = currentStatus === 'active' ? 'suspended' : 'active';
+        const newStatus = currentStatus === 'active' ? 'suspended' : 'active';
+        shops[idx].subscription_status = newStatus;
         localDB.saveCollection('shops', shops);
         set({ allShops: shops });
         if (get().currentShop?.id === shopId) {

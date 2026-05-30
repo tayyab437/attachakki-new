@@ -7,38 +7,70 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Retrieve credentials from environment variables or setting overrides
-const getSupabaseConfig = () => {
+// Mutable configuration object that can be updated dynamically
+export const config = {
+  url: '',
+  key: '',
+  isOnline: false
+};
+
+// Underlying raw Supabase client instance
+export let rawClient: any = null;
+
+// Dynamic proxy representing the Supabase client. All calls are bound and routed to rawClient.
+export const supabase = new Proxy({}, {
+  get(target, prop, receiver) {
+    if (!rawClient) {
+      return undefined;
+    }
+    const value = Reflect.get(rawClient, prop, receiver);
+    if (typeof value === 'function') {
+      return value.bind(rawClient);
+    }
+    return value;
+  }
+}) as any;
+
+// Synchronous initial loading of local/Vite build credentials
+const initSync = () => {
   const metaEnv = (import.meta as any).env || {};
-  const envUrl = metaEnv.VITE_SUPABASE_URL;
-  const envKey = metaEnv.VITE_SUPABASE_ANON_KEY;
   
-  // Also check local storage for runtime customization in the UI
+  // Read either import.meta.env or compiled define bindings
+  let envUrl = metaEnv.VITE_SUPABASE_URL;
+  if (!envUrl && typeof process !== 'undefined' && process.env) {
+    envUrl = process.env.VITE_SUPABASE_URL;
+  }
+  
+  let envKey = metaEnv.VITE_SUPABASE_ANON_KEY;
+  if (!envKey && typeof process !== 'undefined' && process.env) {
+    envKey = process.env.VITE_SUPABASE_ANON_KEY;
+  }
+  
   const storedUrl = localStorage.getItem('supa_url_override');
   const storedKey = localStorage.getItem('supa_key_override');
   const forceOffline = localStorage.getItem('force_offline') === 'true';
 
-  if (forceOffline) {
-    return {
-      url: '',
-      key: '',
-      isOnline: false
-    };
+  if (!forceOffline) {
+    const url = storedUrl || envUrl;
+    const key = storedKey || envKey;
+    if (url && key) {
+      config.url = url;
+      config.key = key;
+      config.isOnline = true;
+      rawClient = createClient(url, key);
+      return;
+    }
   }
-
-  return {
-    url: storedUrl || envUrl || '',
-    key: storedKey || envKey || '',
-    isOnline: !!(storedUrl || envUrl) && !!(storedKey || envKey)
-  };
+  config.isOnline = false;
 };
 
-export const config = getSupabaseConfig();
+initSync();
 
-// Initialize the real Client instance if online credentials exist
-export const supabase = config.isOnline 
-  ? createClient(config.url, config.key) 
-  : null as any;
+// Dual-mode compatible placeholder for compatibility
+export const initSupabase = async (): Promise<boolean> => {
+  initSync();
+  return config.isOnline;
+};
 
 /**
  * 20-Table In-Memory & LocalStorage Database Simulation
