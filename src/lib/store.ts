@@ -492,13 +492,18 @@ export const useStore = create<AppStore>((set, get) => ({
         ]);
 
         let settingsObj = {};
+        const localSettingsRaw = localStorage.getItem('flour_db_settings');
+        const localSettings = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
+
         const { data: settingsData } = await supabase
           .from('settings')
           .select('*')
           .eq('shop_id', shop.id)
           .maybeSingle();
         if (settingsData) {
-          settingsObj = settingsData;
+          settingsObj = { ...localSettings, ...settingsData };
+        } else {
+          settingsObj = localSettings;
         }
 
         set({
@@ -527,6 +532,9 @@ export const useStore = create<AppStore>((set, get) => ({
         return items.filter(item => item.shop_id === shop.id);
       };
 
+      const localSettingsRaw = localStorage.getItem('flour_db_settings');
+      const settingsObj = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
+
       set({
         products: filterByShop<Product>('products'),
         categories: filterByShop<any>('categories'),
@@ -541,7 +549,7 @@ export const useStore = create<AppStore>((set, get) => ({
         expenses: filterByShop<Expense>('expenses'),
         notifications: filterByShop<Notification>('notifications'),
         activityLogs: filterByShop<ActivityLog>('activity_logs'),
-        settings: localDB.getCollection<any>('settings') || {},
+        settings: settingsObj,
         appMode: 'demo'
       });
     }
@@ -1940,31 +1948,34 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const shop = get().currentShop;
     if (!shop) return;
 
+    const current = get().settings || {};
+    const merged = { shop_id: shop.id, ...current, ...updatedFields };
+
+    // Optimistically update settings state so the UI (theme, etc) updates immediately
+    set({ settings: merged });
+    localStorage.setItem('flour_db_settings', JSON.stringify(merged));
+
     if (config.isOnline && supabase) {
       set({ loading: true });
       try {
-        const current = get().settings || {};
-        const merged = { shop_id: shop.id, ...current, ...updatedFields };
         const { error } = await supabase.from('settings').upsert([merged]);
-        if (error) throw error;
-
-        await supabase.from('activity_logs').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          user_email: get().currentUser?.email || 'admin',
-          action: 'Settings Modified',
-          details: 'Updated global system rules, tax codes, or SMS parameters on the live database.'
-        }]);
+        if (error) {
+          console.warn('Silent live DB update settings error, fell back to local storage:', error);
+        } else {
+          await supabase.from('activity_logs').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            user_email: get().currentUser?.email || 'admin',
+            action: 'Settings Modified',
+            details: 'Updated global system rules, tax codes, or SMS parameters on the live database.'
+          }]);
+        }
       } catch (err) {
         console.error('Failed to upsert settings to Supabase settings table:', err);
       } finally {
         set({ loading: false });
       }
     } else {
-      const current = localDB.getCollection<any>('settings') || {};
-      const merged = { ...current, ...updatedFields };
-      localStorage.setItem('flour_db_settings', JSON.stringify(merged));
-      
       const logs = localDB.getCollection<ActivityLog>('activity_logs');
       logs.push({
         id: `act-${Date.now()}`,
@@ -1986,24 +1997,28 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
     const merged = { ...shop, ...data, updated_at: new Date().toISOString() };
 
+    // Optimistically update currentShop immediately
+    set({ currentShop: merged });
+
+    // Save fallback info locally
+    const shops = localDB.getCollection<Shop>('shops');
+    const idx = shops.findIndex(s => s.id === shop.id);
+    if (idx !== -1) {
+      shops[idx] = merged;
+      localDB.saveCollection('shops', shops);
+    }
+
     if (config.isOnline && supabase) {
       set({ loading: true });
       try {
         const { error } = await supabase.from('shops').update(data).eq('id', shop.id);
-        if (error) throw error;
-        set({ currentShop: merged });
+        if (error) {
+          console.warn('Silent live DB update shop profile error, fell back to local storage:', error);
+        }
       } catch (err) {
         console.error('Failed to modify shop on Supabase:', err);
       } finally {
         set({ loading: false });
-      }
-    } else {
-      const shops = localDB.getCollection<Shop>('shops');
-      const idx = shops.findIndex(s => s.id === shop.id);
-      if (idx !== -1) {
-        shops[idx] = merged;
-        localDB.saveCollection('shops', shops);
-        set({ currentShop: merged });
       }
     }
 
