@@ -19,10 +19,12 @@ import {
 
 export default function App() {
   const { 
-    currentUser, currentShop, initStore, logout, startRealtimeSimulation, switchRole 
+    currentUser, currentShop, initStore, logout, startRealtimeSimulation, switchRole, settings 
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'products' | 'stock' | 'customers' | 'suppliers' | 'expenses' | 'reports' | 'settings' | 'admin'>('dashboard');
+
+  const activeTheme = settings?.theme || 'light';
 
   // Load baseline states
   useEffect(() => {
@@ -66,6 +68,69 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-gray-800" id="main-app-frame">
+      <style>{`
+        :root {
+          ${activeTheme === 'emerald' ? `
+            --color-orange-50: #ecfdf5 !important;
+            --color-orange-100: #d1fae5 !important;
+            --color-orange-200: #a7f3d0 !important;
+            --color-orange-500: #10b981 !important;
+            --color-orange-600: #059669 !important;
+            --color-orange-700: #047857 !important;
+          ` : activeTheme === 'royal' ? `
+            --color-orange-50: #e0e7ff !important;
+            --color-orange-100: #c7d2fe !important;
+            --color-orange-200: #c7d2fe !important;
+            --color-orange-500: #6366f1 !important;
+            --color-orange-600: #4f46e5 !important;
+            --color-orange-700: #4338ca !important;
+          ` : activeTheme === 'dark' ? `
+            --color-orange-50: #374151 !important;
+            --color-orange-100: #4b5563 !important;
+            --color-orange-200: #6b7280 !important;
+            --color-orange-500: #9ca3af !important;
+            --color-orange-600: #f3f4f6 !important;
+            --color-orange-700: #ffffff !important;
+          ` : ''}
+        }
+        
+        ${activeTheme === 'dark' ? `
+          body {
+            background-color: #0f172a !important;
+            color: #f1f5f9 !important;
+          }
+          #main-app-frame {
+            background-color: #0f172a !important;
+            color: #f1f5f9 !important;
+          }
+          #main-global-header, #sidebar-container, #main-content-canvas > div, .bg-white, .bg-white\\/50 {
+            background-color: #1e293b !important;
+            border-color: #334155 !important;
+            color: #f1f5f9 !important;
+          }
+          h1, h2, h3, h4, span, label, p, td, th {
+            color: #f8fafc !important;
+          }
+          .text-gray-900, .text-gray-805, .text-gray-905, .text-gray-800, .text-gray-700, .text-gray-650 {
+            color: #cbd5e1 !important;
+          }
+          .text-gray-500, .text-gray-400 {
+            color: #94a3b8 !important;
+          }
+          input, select, textarea {
+            background-color: #1e293b !important;
+            border-color: #334155 !important;
+            color: #f8fafc !important;
+          }
+          .bg-gray-50, .bg-gray-50\\/50, .bg-gray-100 {
+            background-color: #334155 !important;
+            color: #f8fafc !important;
+          }
+          .border-gray-100, .border-gray-150, .border-gray-200 {
+            border-color: #334155 !important;
+          }
+        ` : ''}
+      `}</style>
       
       {/* GLOBAL HEADER TOPBAR */}
       <header className="bg-white border-b border-gray-150 sticky top-0 z-40 print:hidden" id="main-global-header">

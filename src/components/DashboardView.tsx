@@ -101,7 +101,7 @@ export default function DashboardView() {
   return (
     <div className="space-y-6" id="dashboard-view-panel">
       
-      {/* REAL-TIME TELEMETRY FLOATER */}
+      {/* REAL-TIME ACTIVE STATE HEADER */}
       <div className="bg-gray-900 text-white rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 border border-gray-800" id="live-banner">
         <div className="flex items-start gap-3">
           <div className="p-3 bg-orange-600/20 text-orange-400 rounded-xl shrink-0 mt-0.5 animate-pulse">
@@ -109,25 +109,15 @@ export default function DashboardView() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-gray-100">Supabase State Synchronize (Live)</span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-900/30 text-emerald-400 border border-emerald-500/20">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping"></span> Realtime Active
+              <span className="text-sm font-semibold text-gray-100">Live Multi-Tenant Synchronization Active</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/25">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Raw Grain Realtime Network
               </span>
             </div>
             <p className="text-gray-400 text-xs mt-0.5">
-              Dashboard figures refresh instantly using WebSocket multi-tenant triggers when any sales or grain inventory loads.
+              Your dashboard aggregates authentic active metrics instantly from your Supabase nodes as transaction changes occur.
             </p>
           </div>
-        </div>
-        
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={triggerRealtimeSale}
-            className="flex items-center gap-1.5 px-4 py-2 bg-orange-600 hover:bg-orange-700 active:scale-95 text-white font-semibold text-xs rounded-xl transition-all cursor-pointer shadow-sm"
-          >
-            <Play className="h-3.5 w-3.5 fill-current" />
-            <span>Simulate Realtime POS Sale</span>
-          </button>
         </div>
       </div>
 

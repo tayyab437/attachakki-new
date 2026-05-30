@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { localDB, supabase, config } from './supabase';
+import { localDB, supabase as rawSupabase, config } from './supabase';
 import { 
   Shop, Profile, Product, InventoryLog, Customer, CustomerTransaction, 
   Supplier, SupplierTransaction, Sale, SaleItem, Invoice, Expense, 
@@ -106,6 +106,180 @@ interface AppStore {
   // Super Admin controls
   toggleShopStatus: (shopId: string) => Promise<void>;
 }
+
+/**
+ * Central Database Retrying and Session Re-Establishment service.
+ * Designed with exponential backoff and randomized jitter.
+ */
+export async function executeDbWithRetry<T>(
+  operationName: string,
+  op: () => Promise<any>,
+  maxRetries = 3
+): Promise<any> {
+  let attempt = 0;
+  const initialDelay = 500; // ms
+  
+  while (true) {
+    try {
+      const result = await op();
+      
+      // If there is no error block, then execution is clean and valid.
+      if (!result || !result.error) {
+        return result;
+      }
+      
+      const error = result.error;
+      const errorMsg = String(error.message || '').toLowerCase();
+      const errorCode = String(error.code || '');
+      
+      const isRLS = errorCode === '42501' || 
+                    errorMsg.includes('row-level security') || 
+                    errorMsg.includes('rls') || 
+                    errorMsg.includes('policy') ||
+                    errorMsg.includes('violates');
+                    
+      const isNetwork = errorMsg.includes('fetch') || 
+                        errorMsg.includes('network') || 
+                        errorMsg.includes('timeout') || 
+                        errorMsg.includes('failed to fetch') ||
+                        error.status === 0;
+
+      if ((isRLS || isNetwork) && attempt < maxRetries) {
+        attempt++;
+        const backoffDelay = initialDelay * Math.pow(2, attempt - 1) * (0.85 + Math.random() * 0.3);
+        console.warn(`[RETRY ENGINE] '${operationName}' failed with ${isRLS ? 'RLS Policy' : 'Network'} block. Re-establishing session context and retrying in ${Math.round(backoffDelay)}ms (Attempt ${attempt}/${maxRetries})...`);
+        
+        // Attempt to re-establish session context
+        if (rawSupabase) {
+          try {
+            if (rawSupabase.auth) {
+              await rawSupabase.auth.getSession();
+            }
+            // Execute a simple metadata validation query to re-establish connection
+            await rawSupabase.from('profiles').select('id').limit(1);
+          } catch (sessionErr) {
+            console.warn('[RETRY ENGINE] Session validation ping returned error:', sessionErr);
+          }
+        }
+        
+        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+        continue;
+      }
+      
+      // If error is persistent and retries are exhausted
+      if (attempt >= maxRetries) {
+        console.error(`[RETRY ENGINE] DB transaction '${operationName}' permanently failed on ${maxRetries} backoffs.`);
+        const textHelp = 'Go to System Settings to ensure your Live Supabase container or local connection rules are established.';
+        const customMessage = `Persistent ${isRLS ? 'Security/RLS Policy' : 'Network'} error on ${operationName}: ${error.message || 'Permission Denied'}. ${textHelp}`;
+        
+        // Update store error states
+        useStore.setState({ errorMessage: customMessage });
+        
+        // Push to store's alert array dynamically
+        const currentNotifs = useStore.getState().notifications || [];
+        useStore.setState({
+          notifications: [
+            {
+              id: `db-ret-err-${Date.now()}`,
+              shop_id: useStore.getState().currentShop?.id || 'sys',
+              title: 'Supabase Data Sync Issue',
+              message: customMessage,
+              type: 'credit_alert',
+              read: false,
+              created_at: new Date().toISOString()
+            },
+            ...currentNotifs
+          ]
+        });
+      }
+      return result;
+    } catch (caughtErr: any) {
+      if (attempt < maxRetries) {
+        attempt++;
+        const backoffDelay = initialDelay * Math.pow(2, attempt - 1) * (0.85 + Math.random() * 0.3);
+        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+        continue;
+      }
+      const crashMsg = `Untracked backend crash on '${operationName}': ${caughtErr.message}`;
+      useStore.setState({ errorMessage: crashMsg });
+      
+      const currentNotifs = useStore.getState().notifications || [];
+      useStore.setState({
+        notifications: [
+          {
+            id: `db-crash-${Date.now()}`,
+            shop_id: useStore.getState().currentShop?.id || 'sys',
+            title: 'Critical Database Crash',
+            message: crashMsg,
+            type: 'credit_alert',
+            read: false,
+            created_at: new Date().toISOString()
+          },
+          ...currentNotifs
+        ]
+      });
+      return { data: null, error: caughtErr };
+    }
+  }
+}
+
+// Proxied Supabase client that embeds transparent retry and recovery rules for store.ts queries
+export const supabase = !rawSupabase ? null : new Proxy(rawSupabase, {
+  get(target, prop, receiver) {
+    if (prop === 'from') {
+      return function(tableName: string) {
+        const builder = target.from(tableName);
+        
+        const wrapThenable = (obj: any): any => {
+          return new Proxy(obj, {
+            get(t, p, r) {
+              if (p === 'then') {
+                return function(onfulfilled?: any, onrejected?: any) {
+                  const originalThen = t.then.bind(t);
+                  
+                  const op = () => {
+                    return new Promise((resolve, reject) => {
+                      originalThen(resolve, reject);
+                    });
+                  };
+                  
+                  return executeDbWithRetry(`Select/Mutate operation on '${tableName}'`, op)
+                    .then(
+                      (res) => onfulfilled ? onfulfilled(res) : res,
+                      (err) => onrejected ? onrejected(err) : Promise.reject(err)
+                    );
+                };
+              }
+              const val = Reflect.get(t, p, r);
+              if (typeof val === 'function') {
+                return function(...args: any[]) {
+                  const nextBuilder = val.apply(t, args);
+                  return wrapThenable(nextBuilder);
+                };
+              }
+              return val;
+            }
+          });
+        };
+        
+        return wrapThenable(builder);
+      };
+    }
+    
+    if (prop === 'rpc') {
+      return function(fnName: string, args?: any) {
+        const op = () => {
+          return new Promise((resolve, reject) => {
+            target.rpc(fnName, args).then(resolve, reject);
+          });
+        };
+        return executeDbWithRetry(`RPC Function '${fnName}'`, op);
+      };
+    }
+    
+    return Reflect.get(target, prop, receiver);
+  }
+}) as any;
 
 export const useStore = create<AppStore>((set, get) => ({
   currentUser: null,
@@ -395,7 +569,10 @@ export const useStore = create<AppStore>((set, get) => ({
         };
 
         const { error: sErr } = await supabase.from('shops').insert([newShop]);
-        if (sErr) throw sErr;
+        if (sErr) {
+          (sErr as any).tableName = 'shops';
+          throw sErr;
+        }
 
         const newProfile: Profile = {
           id: newUserId,
@@ -409,17 +586,24 @@ export const useStore = create<AppStore>((set, get) => ({
         };
 
         const { error: pErr } = await supabase.from('profiles').insert([newProfile]);
-        if (pErr) throw pErr;
+        if (pErr) {
+          (pErr as any).tableName = 'profiles';
+          throw pErr;
+        }
 
         const liveCatId = crypto.randomUUID();
-        await supabase.from('categories').insert([{
+        const { error: catErr } = await supabase.from('categories').insert([{
           id: liveCatId,
           shop_id: newShopId,
           name: 'Premium Ground Flour',
           description: 'Finely milled wheat flour options'
         }]);
+        if (catErr) {
+          (catErr as any).tableName = 'categories';
+          throw catErr;
+        }
 
-        await supabase.from('products').insert([{
+        const { error: prodErr } = await supabase.from('products').insert([{
           id: crypto.randomUUID(),
           shop_id: newShopId,
           category_id: liveCatId,
@@ -431,8 +615,12 @@ export const useStore = create<AppStore>((set, get) => ({
           stock: 300,
           min_stock_alert: 50
         }]);
+        if (prodErr) {
+          (prodErr as any).tableName = 'products';
+          throw prodErr;
+        }
 
-        await supabase.from('settings').insert([{
+        const { error: setErr } = await supabase.from('settings').insert([{
           shop_id: newShopId,
           theme: 'light',
           language: 'en',
@@ -442,6 +630,10 @@ export const useStore = create<AppStore>((set, get) => ({
           tax_registered: true,
           tax_id: 'NTN-82910-82B-9'
         }]);
+        if (setErr) {
+          (setErr as any).tableName = 'settings';
+          throw setErr;
+        }
 
         localStorage.setItem('logged_in_user_email', email.trim().toLowerCase());
 
@@ -456,7 +648,54 @@ export const useStore = create<AppStore>((set, get) => ({
         return { success: true, msg: 'Live Supabase shop account registered!' };
       } catch (err: any) {
         set({ loading: false });
-        return { success: false, msg: `Live Database Registration Error: ${err.message}` };
+        
+        const errMsg = String(err.message || '');
+        const errCode = String(err.code || '');
+        const isRLS = errCode === '42501' || 
+                      errMsg.toLowerCase().includes('row-level security') || 
+                      errMsg.toLowerCase().includes('rls') || 
+                      errMsg.toLowerCase().includes('policy') ||
+                      errMsg.toLowerCase().includes('violates');
+        
+        if (isRLS) {
+          let offendingTable = err.tableName || 'unknown';
+          if (offendingTable === 'unknown') {
+            const tableNames = [
+              'shops', 'profiles', 'categories', 'products', 'inventory_logs', 
+              'customers', 'customer_transactions', 'suppliers', 'supplier_transactions', 
+              'sales', 'sale_items', 'invoices', 'expenses', 'notifications', 
+              'activity_logs', 'settings'
+            ];
+            const matched = tableNames.find(t => 
+              errMsg.toLowerCase().includes(`"${t}"`) || 
+              errMsg.toLowerCase().includes(`'${t}'`) || 
+              errMsg.toLowerCase().includes(` ${t} `)
+            );
+            if (matched) {
+              offendingTable = matched;
+            }
+          }
+          
+          const adviceMessage = `⚠️ [Row Level Security Violation Detected]
+Database operation refused when inserting registration data on table '${offendingTable}'.
+
+👉 ADVICE & DIAGNOSTICS:
+Your connected Supabase instance has Row Level Security enabled for '${offendingTable}' but lacks an approved write policy for client connections.
+
+🔧 HOW TO AUTHORIZE THIS OPERATION:
+Option A: Run this SQL block in your Supabase SQL Editor to enable public insert access:
+   ALTER TABLE ${offendingTable} ENABLE ROW LEVEL SECURITY;
+   CREATE POLICY "Allow direct inserts" ON ${offendingTable} FOR INSERT TO public WITH CHECK (true);
+
+Option B: Disable RLS for testing sandbox mode:
+   ALTER TABLE ${offendingTable} DISABLE ROW LEVEL SECURITY;
+
+Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
+          
+          return { success: false, msg: adviceMessage };
+        }
+        
+        return { success: false, msg: `Live Database Registration Error: [Code ${errCode}] ${errMsg}` };
       }
     } else {
       // LocalDB offline logic
@@ -725,30 +964,38 @@ export const useStore = create<AppStore>((set, get) => ({
       updated_at: new Date().toISOString()
     };
 
+    // Optimistic Update: instantly display newly added product
+    const currentList = get().products;
+    set({
+      products: [...currentList, newProduct]
+    });
+
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('products').insert([newProduct]);
-        if (error) throw error;
-        
-        if (newProduct.stock > 0) {
-          await supabase.from('inventory_logs').insert([{
-            id: crypto.randomUUID(),
-            shop_id: shop.id,
-            product_id: newProduct.id,
-            type: 'stock_in',
-            quantity: newProduct.stock,
-            unit: newProduct.unit,
-            reason: 'Product Stock Seed',
-            created_by: get().currentUser?.id || 'sys',
-            created_at: new Date().toISOString()
-          }]);
+      // Async database insert in background
+      (async () => {
+        try {
+          const { error } = await supabase.from('products').insert([newProduct]);
+          if (error) throw error;
+          
+          if (newProduct.stock > 0) {
+            await supabase.from('inventory_logs').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              product_id: newProduct.id,
+              type: 'stock_in',
+              quantity: newProduct.stock,
+              unit: newProduct.unit,
+              reason: 'Product Stock Seed',
+              created_by: get().currentUser?.id || 'sys',
+              created_at: new Date().toISOString()
+            }]);
+          }
+        } catch (err) {
+          console.error('Failed to write product to live Supabase:', err);
+        } finally {
+          get().refreshData();
         }
-      } catch (err) {
-        console.error('Failed to write product to live Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       const products = localDB.getCollection<Product>('products');
       products.push(newProduct);
@@ -769,52 +1016,57 @@ export const useStore = create<AppStore>((set, get) => ({
         });
         localDB.saveCollection('inventory_logs', logs);
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   updateProduct: async (id, data) => {
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const prevProd = get().products.find(p => p.id === id);
-        const prevStock = prevProd ? prevProd.stock : 0;
-        const unit = prevProd ? prevProd.unit : 'KG';
-        
-        const { error } = await supabase
-          .from('products')
-          .update({
-            ...data,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', id);
-        if (error) throw error;
+    const prevProd = get().products.find(p => p.id === id);
+    const prevStock = prevProd ? prevProd.stock : 0;
+    const unit = prevProd ? prevProd.unit : 'KG';
 
-        if (data.stock !== undefined && data.stock !== prevStock) {
-          const diff = data.stock - prevStock;
-          await supabase.from('inventory_logs').insert([{
-            id: crypto.randomUUID(),
-            shop_id: get().currentShop?.id || '',
-            product_id: id,
-            type: diff > 0 ? 'stock_in' : 'stock_out',
-            quantity: Math.abs(diff),
-            unit: unit,
-            reason: 'Direct Stock Override Edit',
-            created_by: get().currentUser?.id || 'sys',
-            created_at: new Date().toISOString()
-          }]);
+    // Optimistic Update: instantly update product in UI state
+    set({
+      products: get().products.map(p => p.id === id ? { ...p, ...data, updated_at: new Date().toISOString() } : p)
+    });
+
+    if (config.isOnline && supabase) {
+      // Async background DB synchronization
+      (async () => {
+        try {
+          const { error } = await supabase
+            .from('products')
+            .update({
+              ...data,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', id);
+          if (error) throw error;
+
+          if (data.stock !== undefined && data.stock !== prevStock) {
+            const diff = data.stock - prevStock;
+            await supabase.from('inventory_logs').insert([{
+              id: crypto.randomUUID(),
+              shop_id: get().currentShop?.id || '',
+              product_id: id,
+              type: diff > 0 ? 'stock_in' : 'stock_out',
+              quantity: Math.abs(diff),
+              unit: unit,
+              reason: 'Direct Stock Override Edit',
+              created_by: get().currentUser?.id || 'sys',
+              created_at: new Date().toISOString()
+            }]);
+          }
+        } catch (err) {
+          console.error('Failed to sync updated product to live Supabase:', err);
+        } finally {
+          get().refreshData();
         }
-      } catch (err) {
-        console.error('Failed to sync updated product to live Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       const products = localDB.getCollection<Product>('products');
       const idx = products.findIndex(p => p.id === id);
       if (idx !== -1) {
-        const prevStock = products[idx].stock;
         products[idx] = { ...products[idx], ...data, updated_at: new Date().toISOString() };
         localDB.saveCollection('products', products);
 
@@ -835,53 +1087,68 @@ export const useStore = create<AppStore>((set, get) => ({
           localDB.saveCollection('inventory_logs', logs);
         }
       }
+      get().refreshData();
     }
-    await get().refreshData();
   },
 
   deleteProduct: async (id) => {
+    // Optimistic Update: instantly clear product from UI state
+    set({
+      products: get().products.filter(p => p.id !== id)
+    });
+
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('products').delete().eq('id', id);
-        if (error) throw error;
-      } catch (err) {
-        console.error('Failed to delete live product:', err);
-      } finally {
-        set({ loading: false });
-      }
+      // Async background DB delete
+      (async () => {
+        try {
+          const { error } = await supabase.from('products').delete().eq('id', id);
+          if (error) throw error;
+        } catch (err) {
+          console.error('Failed to delete live product:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const products = localDB.getCollection<Product>('products').filter(p => p.id !== id);
       localDB.saveCollection('products', products);
+      get().refreshData();
     }
-    await get().refreshData();
   },
 
   addCategory: async (name, description) => {
     const shop = get().currentShop;
     if (!shop) return;
 
+    const newCat = {
+      id: config.isOnline ? crypto.randomUUID() : `cat-${Date.now()}`,
+      shop_id: shop.id,
+      name,
+      description
+    };
+
+    // Optimistic Update: instantly update list in UI
+    set({
+      categories: [...get().categories, newCat]
+    });
+
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('categories').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          name,
-          description
-        }]);
-        if (error) throw error;
-      } catch (err) {
-        console.error('Failed to load category to live DB:', err);
-      } finally {
-        set({ loading: false });
-      }
+      (async () => {
+        try {
+          const { error } = await supabase.from('categories').insert([newCat]);
+          if (error) throw error;
+        } catch (err) {
+          console.error('Failed to load category to live DB:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const categories = localDB.getCollection<any>('categories');
-      categories.push({ id: `cat-${Date.now()}`, shop_id: shop.id, name, description });
+      categories.push(newCat);
       localDB.saveCollection('categories', categories);
+      get().refreshData();
     }
-    await get().refreshData();
   },
 
   adjustInventory: async ({ product_id, type, quantity, reason }) => {
@@ -895,36 +1162,42 @@ export const useStore = create<AppStore>((set, get) => ({
     const finalChange = quantity * factor;
     const computedStock = Math.max(0, targetProduct.stock + finalChange);
 
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        await supabase.from('products').update({ stock: computedStock, updated_at: new Date().toISOString() }).eq('id', product_id);
-        await supabase.from('inventory_logs').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          product_id,
-          type,
-          quantity,
-          unit: targetProduct.unit,
-          reason,
-          created_by: get().currentUser?.id || 'sys'
-        }]);
+    // Optimistic Update: instantly reflect inventory balance in UI state
+    set({
+      products: get().products.map(p => p.id === product_id ? { ...p, stock: computedStock, updated_at: new Date().toISOString() } : p)
+    });
 
-        if (computedStock <= targetProduct.min_stock_alert) {
-          await supabase.from('notifications').insert([{
+    if (config.isOnline && supabase) {
+      (async () => {
+        try {
+          await supabase.from('products').update({ stock: computedStock, updated_at: new Date().toISOString() }).eq('id', product_id);
+          await supabase.from('inventory_logs').insert([{
             id: crypto.randomUUID(),
             shop_id: shop.id,
-            title: 'Critical Stock Alert',
-            message: `${targetProduct.name} only has ${computedStock} ${targetProduct.unit} left.`,
-            type: 'low_stock',
-            read: false
+            product_id,
+            type,
+            quantity,
+            unit: targetProduct.unit,
+            reason,
+            created_by: get().currentUser?.id || 'sys'
           }]);
+
+          if (computedStock <= targetProduct.min_stock_alert) {
+            await supabase.from('notifications').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              title: 'Critical Stock Alert',
+              message: `${targetProduct.name} only has ${computedStock} ${targetProduct.unit} left.`,
+              type: 'low_stock',
+              read: false
+            }]);
+          }
+        } catch (err) {
+          console.error('Supabase inventory log save failed:', err);
+        } finally {
+          get().refreshData();
         }
-      } catch (err) {
-        console.error('Supabase inventory log save failed:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       const products = localDB.getCollection<Product>('products');
       const pIdx = products.findIndex(p => p.id === product_id);
@@ -961,9 +1234,8 @@ export const useStore = create<AppStore>((set, get) => ({
           localDB.saveCollection('notifications', alerts);
         }
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   createSale: async (data) => {
@@ -1009,125 +1281,152 @@ export const useStore = create<AppStore>((set, get) => ({
     }
 
     const remainingUnpaidCharge = netAmount - data.paid_amount;
+    const invNumber = `INV-${new Date().getFullYear()}-${1000 + get().sales.length + 1}`;
+
+    const newSale: Sale = {
+      id: saleId,
+      shop_id: shop.id,
+      customer_id: data.customer_id,
+      customer_name_manual: data.customer_name_manual,
+      total_amount: itemSubtotal,
+      discount: data.discount,
+      tax_amount: taxAmount,
+      net_amount: netAmount,
+      paid_amount: data.paid_amount,
+      payment_method: data.payment_method,
+      payment_status: paymentStatus,
+      created_by: user.id,
+      created_at: new Date().toISOString()
+    };
+
+    const newInvoice: Invoice = {
+      id: config.isOnline ? crypto.randomUUID() : `inv-${Date.now()}`,
+      shop_id: shop.id,
+      sale_id: saleId,
+      invoice_number: invNumber,
+      due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
+      notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
+      created_at: new Date().toISOString()
+    };
+
+    // --- INSTANT OPTIMISTIC STATE UPDATE ---
+    const currentProducts = get().products;
+    const currentCustomers = get().customers;
+    const updatedProducts = currentProducts.map(p => {
+      const line = data.items.find(item => item.product_id === p.id);
+      if (line) {
+        return { ...p, stock: Math.max(0, p.stock - line.quantity) };
+      }
+      return p;
+    });
+    const updatedCustomers = currentCustomers.map(c => {
+      if (c.id === data.customer_id && remainingUnpaidCharge > 0) {
+        return { ...c, balance: c.balance + remainingUnpaidCharge };
+      }
+      return c;
+    });
+
+    // Update state instantly so checkout completes immediately!
+    set({
+      products: updatedProducts,
+      customers: updatedCustomers,
+      sales: [newSale, ...get().sales],
+      saleItems: [...saleItemsList, ...get().saleItems],
+      invoices: [newInvoice, ...get().invoices]
+    });
 
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        // Decrease stock on products
-        for (const line of data.items) {
-          const prod = get().products.find(p => p.id === line.product_id);
-          if (!prod) continue;
-          const finalStock = Math.max(0, prod.stock - line.quantity);
-          await supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id);
-          
-          if (finalStock <= prod.min_stock_alert) {
-            await supabase.from('notifications').insert([{
-              id: crypto.randomUUID(),
-              shop_id: shop.id,
-              title: 'Low Stock Alert',
-              message: `${prod.name} has been depleted to ${finalStock} ${prod.unit} via sale ${saleId}`,
-              type: 'low_stock',
-              read: false
-            }]);
-          }
-        }
+      (async () => {
+        try {
+          const promises: Promise<any>[] = [];
 
-        // Customer balances adjustments
-        if (data.customer_id && remainingUnpaidCharge > 0) {
-          const activeCustomer = get().customers.find(c => c.id === data.customer_id);
-          if (activeCustomer) {
-            const updatedBal = activeCustomer.balance + remainingUnpaidCharge;
-            await supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id);
-            await supabase.from('customer_transactions').insert([{
-              id: crypto.randomUUID(),
-              shop_id: shop.id,
-              customer_id: data.customer_id,
-              type: 'credit',
-              amount: remainingUnpaidCharge,
-              sale_id: saleId,
-              description: `Outstanding credit balance. PKR ${data.paid_amount} deposit.`
-            }]);
+          // Decrease stock on products and record notifications
+          for (const line of data.items) {
+            const prod = currentProducts.find(p => p.id === line.product_id);
+            if (!prod) continue;
+            const finalStock = Math.max(0, prod.stock - line.quantity);
+            promises.push(supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id));
+            
+            if (finalStock <= prod.min_stock_alert) {
+              promises.push(supabase.from('notifications').insert([{
+                id: crypto.randomUUID(),
+                shop_id: shop.id,
+                title: 'Low Stock Alert',
+                message: `${prod.name} has been depleted to ${finalStock} ${prod.unit} via sale ${saleId}`,
+                type: 'low_stock',
+                read: false
+              }]));
+            }
           }
-        }
 
-        if (data.customer_id && data.paid_amount > 0) {
-          await supabase.from('customer_transactions').insert([{
+          // Customer balance updates
+          if (data.customer_id) {
+            const activeCustomer = currentCustomers.find(c => c.id === data.customer_id);
+            if (activeCustomer) {
+              if (remainingUnpaidCharge > 0) {
+                const updatedBal = activeCustomer.balance + remainingUnpaidCharge;
+                promises.push(supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id));
+                promises.push(supabase.from('customer_transactions').insert([{
+                  id: crypto.randomUUID(),
+                  shop_id: shop.id,
+                  customer_id: data.customer_id,
+                  type: 'credit',
+                  amount: remainingUnpaidCharge,
+                  sale_id: saleId,
+                  description: `Outstanding credit balance. PKR ${data.paid_amount} deposit.`
+                }]));
+              }
+              if (data.paid_amount > 0) {
+                promises.push(supabase.from('customer_transactions').insert([{
+                  id: crypto.randomUUID(),
+                  shop_id: shop.id,
+                  customer_id: data.customer_id,
+                  type: 'payment_received',
+                  amount: data.paid_amount,
+                  sale_id: saleId,
+                  description: `Deposit toward checkout sale`,
+                  payment_method: data.payment_method
+                }]));
+              }
+            }
+          }
+
+          // Insert Sale, Items, Invoice, Log, Notifs
+          promises.push(supabase.from('sales').insert([newSale]));
+          if (saleItemsList.length > 0) {
+            promises.push(supabase.from('sale_items').insert(saleItemsList));
+          }
+          promises.push(supabase.from('invoices').insert([newInvoice]));
+
+          const customerLabel = data.customer_id 
+            ? (currentCustomers.find(c => c.id === data.customer_id)?.name || 'Credit Account')
+            : (data.customer_name_manual || 'Walk-in customer');
+
+          promises.push(supabase.from('activity_logs').insert([{
             id: crypto.randomUUID(),
             shop_id: shop.id,
-            customer_id: data.customer_id,
-            type: 'payment_received',
-            amount: data.paid_amount,
-            sale_id: saleId,
-            description: `Deposit toward checkout sale`,
-            payment_method: data.payment_method
-          }]);
+            user_email: user.email,
+            action: 'Created POS Transaction',
+            details: `Invoice ${invNumber} generated for ${customerLabel}. Paid: PKR ${data.paid_amount.toLocaleString()}.`
+          }]));
+
+          promises.push(supabase.from('notifications').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            title: 'POS Sale Executed',
+            message: `Invoice ${invNumber} generated successfully.`,
+            type: 'success',
+            read: false
+          }]));
+
+          // Run concurrently in background
+          await Promise.all(promises);
+        } catch (err) {
+          console.error('Supabase live transaction insert failed:', err);
+        } finally {
+          get().refreshData();
         }
-
-        // Assemble and insert Sale
-        const newSale: Sale = {
-          id: saleId,
-          shop_id: shop.id,
-          customer_id: data.customer_id,
-          customer_name_manual: data.customer_name_manual,
-          total_amount: itemSubtotal,
-          discount: data.discount,
-          tax_amount: taxAmount,
-          net_amount: netAmount,
-          paid_amount: data.paid_amount,
-          payment_method: data.payment_method,
-          payment_status: paymentStatus,
-          created_by: user.id,
-          created_at: new Date().toISOString()
-        };
-        await supabase.from('sales').insert([newSale]);
-
-        // Insert items
-        if (saleItemsList.length > 0) {
-          await supabase.from('sale_items').insert(saleItemsList);
-        }
-
-        // Insert invoice
-        const invoiceCountResult = await supabase.from('sales').select('id', { count: 'exact' });
-        const salesCount = invoiceCountResult.count || 20;
-        const invNumber = `INV-${new Date().getFullYear()}-${1000 + salesCount}`;
-        const newInvoice: Invoice = {
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          sale_id: saleId,
-          invoice_number: invNumber,
-          due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
-          notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
-          created_at: new Date().toISOString()
-        };
-        await supabase.from('invoices').insert([newInvoice]);
-
-        // Activity log
-        const customerLabel = data.customer_id 
-          ? (get().customers.find(c => c.id === data.customer_id)?.name || 'Credit Account')
-          : (data.customer_name_manual || 'Walk-in customer');
-
-        await supabase.from('activity_logs').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          user_email: user.email,
-          action: 'Created POS Transaction',
-          details: `Invoice ${invNumber} generated for ${customerLabel}. Paid: PKR ${data.paid_amount.toLocaleString()}.`
-        }]);
-
-        await supabase.from('notifications').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          title: 'POS Sale Executed',
-          message: `Invoice ${invNumber} generated successfully.`,
-          type: 'success',
-          read: false
-        }]);
-
-      } catch (err) {
-        console.error('Supabase live transaction insert failed:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       // Offline LocalDB mutations
       const products = localDB.getCollection<Product>('products');
@@ -1194,37 +1493,12 @@ export const useStore = create<AppStore>((set, get) => ({
       localDB.saveCollection('customers', customers);
       localDB.saveCollection('customer_transactions', custTransactions);
 
-      const newSale: Sale = {
-        id: saleId,
-        shop_id: shop.id,
-        customer_id: data.customer_id,
-        customer_name_manual: data.customer_name_manual,
-        total_amount: itemSubtotal,
-        discount: data.discount,
-        tax_amount: taxAmount,
-        net_amount: netAmount,
-        paid_amount: data.paid_amount,
-        payment_method: data.payment_method,
-        payment_status: paymentStatus,
-        created_by: user.id,
-        created_at: new Date().toISOString()
-      };
       sales.push(newSale);
       localDB.saveCollection('sales', sales);
 
       saleItems.push(...saleItemsList);
       localDB.saveCollection('sale_items', saleItems);
 
-      const invNumber = `INV-${new Date().getFullYear()}-${1000 + sales.length}`;
-      const newInvoice: Invoice = {
-        id: `inv-${Date.now()}`,
-        shop_id: shop.id,
-        sale_id: saleId,
-        invoice_number: invNumber,
-        due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
-        notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
-        created_at: new Date().toISOString()
-      };
       invoices.push(newInvoice);
       localDB.saveCollection('invoices', invoices);
 
@@ -1253,9 +1527,10 @@ export const useStore = create<AppStore>((set, get) => ({
         created_at: new Date().toISOString()
       });
       localDB.saveCollection('notifications', notesList);
+
+      get().refreshData();
     }
 
-    await get().refreshData();
     return saleId;
   },
 
@@ -1274,28 +1549,34 @@ export const useStore = create<AppStore>((set, get) => ({
       created_at: new Date().toISOString()
     };
 
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('customers').insert([newCust]);
-        if (error) throw error;
+    // Optimistic Update: instantly show the newly added customer
+    set({
+      customers: [...get().customers, newCust]
+    });
 
-        if (data.initialBalance !== 0) {
-          await supabase.from('customer_transactions').insert([{
-            id: crypto.randomUUID(),
-            shop_id: shop.id,
-            customer_id: newCust.id,
-            type: 'opening_balance',
-            amount: Math.abs(data.initialBalance),
-            sale_id: null,
-            description: 'Account Opening Ledger Balance Set'
-          }]);
+    if (config.isOnline && supabase) {
+      (async () => {
+        try {
+          const { error } = await supabase.from('customers').insert([newCust]);
+          if (error) throw error;
+
+          if (data.initialBalance !== 0) {
+            await supabase.from('customer_transactions').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              customer_id: newCust.id,
+              type: 'opening_balance',
+              amount: Math.abs(data.initialBalance),
+              sale_id: null,
+              description: 'Account Opening Ledger Balance Set'
+            }]);
+          }
+        } catch (err) {
+          console.error('Failed to write customer to Supabase:', err);
+        } finally {
+          get().refreshData();
         }
-      } catch (err) {
-        console.error('Failed to write customer to Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       const customers = localDB.getCollection<Customer>('customers');
       customers.push(newCust);
@@ -1316,9 +1597,8 @@ export const useStore = create<AppStore>((set, get) => ({
         });
         localDB.saveCollection('customer_transactions', txs);
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   receiveCustomerPayment: async ({ customer_id, amount, method, description }) => {
@@ -1329,34 +1609,40 @@ export const useStore = create<AppStore>((set, get) => ({
     if (!matchedCust) return;
     const computedBal = Math.max(-1000000, matchedCust.balance - amount);
 
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        await supabase.from('customers').update({ balance: computedBal }).eq('id', customer_id);
-        await supabase.from('customer_transactions').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          customer_id,
-          type: 'payment_received',
-          amount,
-          sale_id: null,
-          description: description || 'Account balance repayment ledger settlement',
-          payment_method: method
-        }]);
+    // Optimistic Update: instantly update customer balance in UI
+    set({
+      customers: get().customers.map(c => c.id === customer_id ? { ...c, balance: computedBal } : c)
+    });
 
-        await supabase.from('notifications').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          title: 'Customer Payment Received',
-          message: `Credit ledger payment of PKR ${amount.toLocaleString()} received from ${matchedCust.name}`,
-          type: 'success',
-          read: false
-        }]);
-      } catch (err) {
-        console.error('Failed to log client payment to remote DB:', err);
-      } finally {
-        set({ loading: false });
-      }
+    if (config.isOnline && supabase) {
+      (async () => {
+        try {
+          await supabase.from('customers').update({ balance: computedBal }).eq('id', customer_id);
+          await supabase.from('customer_transactions').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            customer_id,
+            type: 'payment_received',
+            amount,
+            sale_id: null,
+            description: description || 'Account balance repayment ledger settlement',
+            payment_method: method
+          }]);
+
+          await supabase.from('notifications').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            title: 'Customer Payment Received',
+            message: `Credit ledger payment of PKR ${amount.toLocaleString()} received from ${matchedCust.name}`,
+            type: 'success',
+            read: false
+          }]);
+        } catch (err) {
+          console.error('Failed to log client payment to remote DB:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const customers = localDB.getCollection<Customer>('customers');
       const idx = customers.findIndex(c => c.id === customer_id);
@@ -1390,9 +1676,8 @@ export const useStore = create<AppStore>((set, get) => ({
         });
         localDB.saveCollection('notifications', alerts);
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   addSupplier: async (data) => {
@@ -1410,27 +1695,33 @@ export const useStore = create<AppStore>((set, get) => ({
       created_at: new Date().toISOString()
     };
 
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('suppliers').insert([newSup]);
-        if (error) throw error;
+    // Optimistic Update: instantly add Supplier to list
+    set({
+      suppliers: [...get().suppliers, newSup]
+    });
 
-        if (data.initialBalance !== 0) {
-          await supabase.from('supplier_transactions').insert([{
-            id: crypto.randomUUID(),
-            shop_id: shop.id,
-            supplier_id: newSup.id,
-            type: 'grain_purchased',
-            amount: Math.abs(data.initialBalance),
-            description: 'Opening balance wheat grains invoice bag charges.'
-          }]);
+    if (config.isOnline && supabase) {
+      (async () => {
+        try {
+          const { error } = await supabase.from('suppliers').insert([newSup]);
+          if (error) throw error;
+
+          if (data.initialBalance !== 0) {
+            await supabase.from('supplier_transactions').insert([{
+              id: crypto.randomUUID(),
+              shop_id: shop.id,
+              supplier_id: newSup.id,
+              type: 'grain_purchased',
+              amount: Math.abs(data.initialBalance),
+              description: 'Opening balance wheat grains invoice bag charges.'
+            }]);
+          }
+        } catch (err) {
+          console.error('Failed to create Supplier on Supabase:', err);
+        } finally {
+          get().refreshData();
         }
-      } catch (err) {
-        console.error('Failed to create Supplier on Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      })();
     } else {
       const suppliers = localDB.getCollection<Supplier>('suppliers');
       suppliers.push(newSup);
@@ -1450,9 +1741,8 @@ export const useStore = create<AppStore>((set, get) => ({
         });
         localDB.saveCollection('supplier_transactions', txs);
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   makeSupplierPayment: async ({ supplier_id, amount, method, description }) => {
@@ -1463,35 +1753,41 @@ export const useStore = create<AppStore>((set, get) => ({
     if (!targetSupplier) return;
     const computedBal = Math.max(0, targetSupplier.balance - amount);
 
-    if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        await supabase.from('suppliers').update({ balance: computedBal }).eq('id', supplier_id);
-        await supabase.from('supplier_transactions').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          supplier_id,
-          type: 'payment_made',
-          amount,
-          description: description || 'Repayment to grain supplier',
-          payment_method: method
-        }]);
+    // Optimistic Update: instantly reduce supplier debt balance
+    set({
+      suppliers: get().suppliers.map(s => s.id === supplier_id ? { ...s, balance: computedBal } : s)
+    });
 
-        // Supplier payout as grain business cost
-        await supabase.from('expenses').insert([{
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          category: 'Maintenance',
-          amount,
-          description: `Grain Payout to Supplier ${targetSupplier.name}: ${description}`,
-          date: new Date().toISOString().split('T')[0],
-          created_by: get().currentUser?.id || 'sys'
-        }]);
-      } catch (err) {
-        console.error('Failed to submit supplier payment on live DB:', err);
-      } finally {
-        set({ loading: false });
-      }
+    if (config.isOnline && supabase) {
+      (async () => {
+        try {
+          await supabase.from('suppliers').update({ balance: computedBal }).eq('id', supplier_id);
+          await supabase.from('supplier_transactions').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            supplier_id,
+            type: 'payment_made',
+            amount,
+            description: description || 'Repayment to grain supplier',
+            payment_method: method
+          }]);
+
+          // Supplier payout as grain business cost
+          await supabase.from('expenses').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            category: 'Maintenance',
+            amount,
+            description: `Grain Payout to Supplier ${targetSupplier.name}: ${description}`,
+            date: new Date().toISOString().split('T')[0],
+            created_by: get().currentUser?.id || 'sys'
+          }]);
+        } catch (err) {
+          console.error('Failed to submit supplier payment on live DB:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const suppliers = localDB.getCollection<Supplier>('suppliers');
       const idx = suppliers.findIndex(s => s.id === supplier_id);
@@ -1525,9 +1821,8 @@ export const useStore = create<AppStore>((set, get) => ({
         });
         localDB.saveCollection('expenses', expenses);
       }
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   addExpense: async (data) => {
@@ -1542,42 +1837,52 @@ export const useStore = create<AppStore>((set, get) => ({
       created_at: new Date().toISOString()
     };
 
+    // Optimistic Update: instantly add expense to visual table
+    set({
+      expenses: [...get().expenses, newExp]
+    });
+
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('expenses').insert([newExp]);
-        if (error) throw error;
-      } catch (err) {
-        console.error('Failed to log expense on Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      (async () => {
+        try {
+          const { error } = await supabase.from('expenses').insert([newExp]);
+          if (error) throw error;
+        } catch (err) {
+          console.error('Failed to log expense on Supabase:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const expenses = localDB.getCollection<Expense>('expenses');
       expenses.push(newExp);
       localDB.saveCollection('expenses', expenses);
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   deleteExpense: async (id) => {
+    // Optimistic Update: instantly remove expense from table
+    set({
+      expenses: get().expenses.filter(e => e.id !== id)
+    });
+
     if (config.isOnline && supabase) {
-      set({ loading: true });
-      try {
-        const { error } = await supabase.from('expenses').delete().eq('id', id);
-        if (error) throw error;
-      } catch (err) {
-        console.error('Failed to delete expense on Supabase:', err);
-      } finally {
-        set({ loading: false });
-      }
+      (async () => {
+        try {
+          const { error } = await supabase.from('expenses').delete().eq('id', id);
+          if (error) throw error;
+        } catch (err) {
+          console.error('Failed to delete expense on Supabase:', err);
+        } finally {
+          get().refreshData();
+        }
+      })();
     } else {
       const expenses = localDB.getCollection<Expense>('expenses').filter(e => e.id !== id);
       localDB.saveCollection('expenses', expenses);
+      get().refreshData();
     }
-
-    await get().refreshData();
   },
 
   clearNotification: async (id) => {
@@ -1712,38 +2017,11 @@ export const useStore = create<AppStore>((set, get) => ({
    * INTERACTIVE REALTIME SIMULATION
    */
   triggerRealtimeSale: () => {
-    const shop = get().currentShop;
-    if (!shop) return;
-
-    const products = get().products;
-    if (products.length === 0) return;
-
-    const randomProduct = products[Math.floor(Math.random() * products.length)];
-    const rollQuantity = Math.floor(Math.random() * 15) + 1;
-
-    const mockSaleItem = {
-      product_id: randomProduct.id,
-      quantity: Math.min(rollQuantity, randomProduct.stock > 0 ? randomProduct.stock : 25),
-      sale_price: randomProduct.sale_price
-    };
-
-    get().createSale({
-      customer_id: null,
-      customer_name_manual: 'Zahid Hussain (Simulated)',
-      items: [mockSaleItem],
-      discount: 0,
-      paid_amount: mockSaleItem.quantity * mockSaleItem.sale_price,
-      payment_method: Math.random() > 0.5 ? 'JazzCash' : 'Cash'
-    });
+    // Disabled as requested - nothing is simulated
   },
 
   startRealtimeSimulation: () => {
-    const interval = setInterval(() => {
-      if (Math.random() < 0.35 && get().currentUser && get().currentShop) {
-        get().triggerRealtimeSale();
-      }
-    }, 20000);
-
-    return () => clearInterval(interval);
+    // Disabled as requested - nothing is simulated
+    return () => {};
   }
 }));

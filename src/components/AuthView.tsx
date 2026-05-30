@@ -88,7 +88,7 @@ export default function AuthView() {
             {feedback && (
               <div className={`p-3 rounded-lg text-xs mb-4 flex items-start gap-2 ${feedback.type === 'err' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-emerald-50 text-emerald-800 border border-emerald-100'}`}>
                 <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{feedback.msg}</span>
+                <span className="whitespace-pre-line leading-relaxed">{feedback.msg}</span>
               </div>
             )}
 
@@ -192,7 +192,7 @@ export default function AuthView() {
           {feedback && (
             <div className={`p-3 rounded-lg text-xs mb-4 flex items-start gap-2 ${feedback.type === 'err' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-emerald-50 text-emerald-800 border border-emerald-100'}`}>
               <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>{feedback.msg}</span>
+              <span className="whitespace-pre-line leading-relaxed">{feedback.msg}</span>
             </div>
           )}
 
