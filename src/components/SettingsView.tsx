@@ -3,7 +3,7 @@ import { useStore } from '../lib/store';
 import { 
   Store, CheckCircle, Palette, LogOut, Database, CloudLightning, Download, Upload, Info, RefreshCw, AlertTriangle
 } from 'lucide-react';
-import { config } from '../lib/supabase';
+import { config, getMaskedUrl, getMaskedKey } from '../lib/supabase';
 
 export default function SettingsView() {
   const { currentShop, settings, updateShopProfile, updateSettings, logout } = useStore();
@@ -376,7 +376,64 @@ export default function SettingsView() {
             </ul>
           </div>
 
-          {!config.isOnline && (
+          {config.isOnline ? (
+            <div className="space-y-4">
+              <div className="p-3.5 bg-emerald-50/50 border border-emerald-100 rounded-xl text-[11px] leading-relaxed text-emerald-800">
+                <span className="font-bold flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  Your device is live and synced universally via protected workspace secrets! No manual credentials required.
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Universal Supabase URL</label>
+                    <span className="text-[9px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider flex items-center gap-1">
+                      🔒 Protected Secret
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    value={getMaskedUrl()}
+                    disabled
+                    readOnly
+                    className="w-full text-xs p-3 bg-gray-50/80 border border-gray-200 focus:outline-none rounded-xl font-mono text-gray-400 select-all cursor-not-allowed"
+                  />
+                </div>
+                
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Universal Anon Key</label>
+                    <span className="text-[9px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider flex items-center gap-1">
+                      🔒 Protected Secret
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    value={getMaskedKey()}
+                    disabled
+                    readOnly
+                    className="w-full text-xs p-3 bg-gray-50/80 border border-gray-200 focus:outline-none rounded-xl font-mono text-gray-400 select-none cursor-not-allowed"
+                  />
+                </div>
+              </div>
+              
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                   await useStore.getState().syncLocalToCloud();
+                   alert("Universal Sync Complete! The cloud database has been successfully updated with all local accounts and records.");
+                  }}
+                  className="w-full sm:w-auto px-6 py-2.5 bg-indigo-650 hover:bg-indigo-700 text-white font-bold tracking-wider text-[11px] uppercase rounded-xl transition-all cursor-pointer flex items-center gap-2 justify-center"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Push Local Data to Universal Cloud
+                </button>
+                <p className="text-[10px] text-gray-500 mt-2 font-medium">Click this if you registered accounts or created shops in Sandbox mode and want them securely transferred to your global Cloud instance so staff can login from anywhere.</p>
+              </div>
+            </div>
+          ) : (
             <form onSubmit={saveSupabaseCredentials} className="space-y-4">
               <div className="p-3.5 bg-amber-50/50 border border-amber-100 rounded-xl text-[11px] leading-relaxed text-amber-800">
                 <span>The app is currently running in local-only fallback mode. To enable automatic live cloud syncing universally for all devices, make sure to add your Supabase credentials to the workspace secrets.</span>

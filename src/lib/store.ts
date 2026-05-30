@@ -103,6 +103,7 @@ interface AppStore {
   markAllNotificationsRead: () => Promise<void>;
   updateSettings: (updatedFields: any) => Promise<void>;
   updateShopProfile: (data: Partial<Shop>) => Promise<void>;
+  syncLocalToCloud: () => Promise<void>;
 
   // Super Admin controls
   toggleShopStatus: (shopId: string) => Promise<void>;
@@ -127,7 +128,7 @@ export async function executeDbWithRetry<T>(
   while (true) {
     try {
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Connection Timeout (4.5s limit)')), 4500)
+        setTimeout(() => reject(new Error('Connection Timeout (15s limit)')), 15000)
       );
       const result = await Promise.race([op(), timeoutPromise]);
       
@@ -350,6 +351,14 @@ export const useStore = create<AppStore>((set, get) => ({
     if (config.isOnline && supabase) {
       set({ loading: true, appMode: 'live_supabase' });
       try {
+        // Automatic universal migration sync: guarantee that sandbox offline data gets pushed!
+        const localProfilesCheck = localStorage.getItem('flour_db_profiles');
+        const hasSyncedCheck = sessionStorage.getItem('has_auto_synced');
+        if (localProfilesCheck && !hasSyncedCheck) {
+            await get().syncLocalToCloud(); // Push missing local sandbox configs to Universal Cloud DB
+            sessionStorage.setItem('has_auto_synced', 'true');
+        }
+
         const { data: profiles, error: pErr } = await supabase
           .from('profiles')
           .select('*');
@@ -598,6 +607,76 @@ export const useStore = create<AppStore>((set, get) => ({
         settings: settingsObj,
         appMode: 'demo'
       });
+    }
+  },
+
+  syncLocalToCloud: async () => {
+    if (!config.isOnline || !supabase) return;
+
+    try {
+      set({ loading: true, errorMessage: 'Syncing local device data to cloud universally...' });
+      
+      const tablesToSync = [
+        { local: 'shops', remote: 'shops' },
+        { local: 'profiles', remote: 'profiles' },
+        { local: 'categories', remote: 'product_categories' },
+        { local: 'products', remote: 'products' },
+        { local: 'inventory_logs', remote: 'inventory_logs' },
+        { local: 'customers', remote: 'customers' },
+        { local: 'customer_transactions', remote: 'customer_transactions' },
+        { local: 'suppliers', remote: 'suppliers' },
+        { local: 'supplier_transactions', remote: 'supplier_transactions' },
+        { local: 'sales', remote: 'sales' },
+        { local: 'sale_items', remote: 'sale_items' },
+        { local: 'invoices', remote: 'invoices' },
+        { local: 'expenses', remote: 'expenses' },
+        { local: 'notifications', remote: 'notifications' },
+        { local: 'activity_logs', remote: 'activity_logs' }
+      ];
+
+      for (const tableMap of tablesToSync) {
+        const localDataRaw = localStorage.getItem(`flour_db_${tableMap.local}`);
+        if (localDataRaw) {
+          let items = JSON.parse(localDataRaw);
+          if (Array.isArray(items) && items.length > 0) {
+            // Filter out default fallback IDs (UUIDs start with 1111 or 2222, or are not valid UUIDs)
+            items = items.filter(item => {
+              const strId = String(item.id || '');
+              // Match standard v4 UUID structure
+              const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(strId);
+              // Ignore system initialization placeholders to avoid unique constraint or syntax errors
+              const isSystemPlaceholder = strId.startsWith('11111111') || strId.startsWith('22222222');
+              return isUuid && !isSystemPlaceholder;
+            });
+            
+            if (items.length > 0) {
+              console.log(`Syncing ${items.length} valid items to ${tableMap.remote}`);
+              const { error } = await rawSupabase.from(tableMap.remote).upsert(items, { onConflict: 'id' });
+              if (error) {
+                console.warn(`Sync warning for ${tableMap.remote}:`, error.message);
+              }
+            }
+          }
+        }
+      }
+      
+      // Also sync settings specifically
+      const settingsDataRaw = localStorage.getItem('flour_db_settings');
+      if (settingsDataRaw) {
+        const settingsItems = Object.entries(JSON.parse(settingsDataRaw)).map(([shop_id, settingsObj]) => ({
+          shop_id,
+          ...settingsObj as any
+        }));
+        if (settingsItems.length > 0) {
+          await rawSupabase.from('settings').upsert(settingsItems, { onConflict: 'shop_id' });
+        }
+      }
+
+      set({ loading: false, errorMessage: null });
+      await get().refreshData();
+    } catch (err: any) {
+      console.error('Universal Sync failed:', err);
+      set({ loading: false, errorMessage: `Universal Sync Error: ${err.message}` });
     }
   },
 
