@@ -19,7 +19,7 @@ export default function ProductView() {
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
   const [category_id, setCategoryId] = useState('');
-  const [unit, setUnit] = useState<'KG' | 'Bag' | 'Maund' | 'Ton'>('KG');
+  const [unit, setUnit] = useState<'KG' | 'Bag' | 'Maund' | 'Ton' | 'Bag (10 KG)' | 'Bag (15 KG)' | 'Bag (20 KG)' | 'Bag (80 KG)'>('KG');
   const [cost_price, setCostPrice] = useState<number>(100);
   const [sale_price, setSalePrice] = useState<number>(130);
   const [stock, setStock] = useState<number>(50);
@@ -307,7 +307,11 @@ export default function ProductView() {
                 className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
               >
                 <option value="KG">KG (Standard/Retail)</option>
-                <option value="Bag">Bag (Sack / Bulk Packaging)</option>
+                <option value="Bag (10 KG)">Bag (10 KG Sack)</option>
+                <option value="Bag (15 KG)">Bag (15 KG Sack)</option>
+                <option value="Bag (20 KG)">Bag (20 KG Sack)</option>
+                <option value="Bag (80 KG)">Bag (80 KG Sack)</option>
+                <option value="Bag">Bag (Other Sack Size)</option>
                 <option value="Maund">Maund (40 KG Native Unit)</option>
                 <option value="Ton">Ton (Metric Tons)</option>
               </select>
@@ -317,6 +321,7 @@ export default function ProductView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Cost Price ({primaryCurrency}) *</label>
               <input
                 type="number"
+                step="any"
                 min={0}
                 required
                 value={cost_price}
@@ -329,6 +334,7 @@ export default function ProductView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Milled Sale Price ({primaryCurrency}) *</label>
               <input
                 type="number"
+                step="any"
                 min={0}
                 required
                 value={sale_price}
@@ -342,6 +348,7 @@ export default function ProductView() {
                 <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Initial Stock Sacks</label>
                 <input
                   type="number"
+                  step="any"
                   min={0}
                   required
                   value={stock}
@@ -355,6 +362,7 @@ export default function ProductView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Minimum Alert Guard</label>
               <input
                 type="number"
+                step="any"
                 min={0}
                 required
                 value={min_stock_alert}
@@ -431,7 +439,7 @@ export default function ProductView() {
                       </td>
                       <td className="px-5 py-3.5 text-center">
                         <span className={`inline-block px-2.5 py-0.5 rounded text-[11px] font-extrabold ${isLow ? 'bg-amber-100 text-amber-800 border border-amber-200 shadow-3xs' : 'bg-gray-100 text-gray-800'}`}>
-                          {prod.stock.toLocaleString()} {prod.unit}
+                          {Number(prod.stock).toFixed(2)} {prod.unit}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-center">

@@ -19,7 +19,8 @@ import {
 
 export default function App() {
   const { 
-    currentUser, currentShop, initStore, logout, startRealtimeSimulation, switchRole, settings 
+    currentUser, currentShop, initStore, logout, startRealtimeSimulation, switchRole, settings,
+    allShops, allProfiles, switchShopWorkspace
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'products' | 'stock' | 'customers' | 'suppliers' | 'expenses' | 'reports' | 'settings' | 'admin'>('dashboard');
@@ -153,27 +154,29 @@ export default function App() {
           <div className="flex items-center gap-4">
             
             {/* Interactive Role Switcher Pill */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-xs">
-              <UserCog className="h-4 w-4 text-gray-500 shrink-0" />
-              <div className="hidden sm:block text-left">
-                <span className="block text-[9px] text-gray-400 font-bold leading-none uppercase">Assigned Policy</span>
-                <span className="block font-bold mt-0.5 text-gray-800 uppercase tracking-wide text-[10px]">{currentUser.role.replace('_', ' ')}</span>
+            {currentUser?.email === 'ac.repair.in.dubai3@gmail.com' && (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-xs">
+                <UserCog className="h-4 w-4 text-gray-500 shrink-0" />
+                <div className="hidden sm:block text-left">
+                  <span className="block text-[9px] text-gray-400 font-bold leading-none uppercase">Assigned Policy</span>
+                  <span className="block font-bold mt-0.5 text-gray-800 uppercase tracking-wide text-[10px]">{currentUser.role.replace('_', ' ')}</span>
+                </div>
+                <select 
+                  value={currentUser.role}
+                  onChange={(e) => {
+                    switchRole(e.target.value as any);
+                    // Default tab fallback if newly switched role is unauthorized
+                    setActiveTab('dashboard');
+                  }}
+                  className="bg-transparent border-none text-[10px] font-bold text-orange-700 focus:outline-none focus:ring-none cursor-pointer uppercase p-0"
+                >
+                  <option value="owner" className="uppercase text-gray-800">Owner Access</option>
+                  <option value="manager" className="uppercase text-gray-800">Manager Access</option>
+                  <option value="cashier" className="uppercase text-gray-800">Cashier Limit</option>
+                  <option value="super_admin" className="uppercase text-gray-800">Super Admin Mode</option>
+                </select>
               </div>
-              <select 
-                value={currentUser.role}
-                onChange={(e) => {
-                  switchRole(e.target.value as any);
-                  // Default tab fallback if newly switched role is unauthorized
-                  setActiveTab('dashboard');
-                }}
-                className="bg-transparent border-none text-[10px] font-bold text-orange-700 focus:outline-none focus:ring-none cursor-pointer uppercase p-0"
-              >
-                <option value="owner" className="uppercase text-gray-800">Owner Access</option>
-                <option value="manager" className="uppercase text-gray-800">Manager Access</option>
-                <option value="cashier" className="uppercase text-gray-800">Cashier Limit</option>
-                <option value="super_admin" className="uppercase text-gray-800">Super Admin Mode</option>
-              </select>
-            </div>
+            )}
 
             {/* User credentials & LogOut */}
             <div className="flex items-center gap-2">
@@ -193,6 +196,28 @@ export default function App() {
           </div>
         </div>
       </header>
+      
+      {/* Impersonation Alert Banner */}
+      {currentUser?.email === 'ac.repair.in.dubai3@gmail.com' && currentShop && currentShop.id !== '11111111-1111-1111-1111-111111111111' && (
+        <div className="bg-amber-50 border-b border-amber-200 py-2.5 px-4 flex flex-col sm:flex-row items-center justify-between text-xs text-amber-900 select-none font-sans gap-2 print:hidden" id="impersonation-warning-bar">
+          <div className="flex items-center gap-2 font-semibold">
+            <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            <span>⚠️ currently viewing and editing records on behalf of <strong className="font-extrabold text-amber-950 underline">{currentShop.name}</strong>. Products, stocks, custom pricing, and ledgers reflect this environment.</span>
+          </div>
+          <button 
+            onClick={async () => {
+              const primaryShop = allShops.find(s => s.id === '11111111-1111-1111-1111-111111111111') || allShops[0];
+              const superAdminProfile = allProfiles.find(p => p.email.toLowerCase() === 'ac.repair.in.dubai3@gmail.com');
+              if (primaryShop && superAdminProfile) {
+                await switchShopWorkspace(primaryShop.id, superAdminProfile.id);
+              }
+            }}
+            className="bg-amber-600 hover:bg-amber-750 text-white font-extrabold py-1 px-3.5 rounded-xl text-[10px] transition shadow-3xs hover:scale-[1.02] cursor-pointer"
+          >
+            Exit Workspace & Return to Primary Super Admin Shop
+          </button>
+        </div>
+      )}
 
       {/* THREE-COLUMN LAYOUT AND WRAPPERS */}
       <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 flex flex-col md:flex-row gap-6 flex-1">

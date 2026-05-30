@@ -27,6 +27,7 @@ export interface Profile {
   avatar_url: string | null;
   is_verified: boolean;
   created_at: string;
+  password?: string;
 }
 
 export interface product_categories {
@@ -43,7 +44,7 @@ export interface Product {
   category_id: string | null;
   name: string;
   sku: string;
-  unit: 'KG' | 'Bag' | 'Maund' | 'Ton';
+  unit: 'KG' | 'Bag' | 'Maund' | 'Ton' | 'Bag (10 KG)' | 'Bag (15 KG)' | 'Bag (20 KG)' | 'Bag (80 KG)';
   cost_price: number;
   sale_price: number;
   stock: number;

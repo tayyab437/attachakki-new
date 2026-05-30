@@ -151,6 +151,7 @@ export default function CustomerLedgerView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Opening Credit ({primaryCurrency})</label>
               <input
                 type="number"
+                step="any"
                 placeholder="0"
                 value={initialBalance === 0 ? '' : initialBalance}
                 onChange={(e) => setInitialBalance(Number(e.target.value))}
@@ -197,6 +198,7 @@ export default function CustomerLedgerView() {
                 <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Repayment Money Cash-In *</label>
                 <input
                   type="number"
+                  step="any"
                   required
                   min={1}
                   max={activeCustomer.balance > 0 ? activeCustomer.balance : 1000000}

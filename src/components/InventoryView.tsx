@@ -81,7 +81,7 @@ export default function InventoryView() {
                 <option value="">Choose item...</option>
                 {products.map(p => (
                   <option key={p.id} value={p.id}>
-                    {p.name} (Current: {p.stock} {p.unit})
+                    {p.name} (Current: {Number(p.stock).toFixed(2)} {p.unit})
                   </option>
                 ))}
               </select>

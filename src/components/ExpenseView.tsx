@@ -123,7 +123,8 @@ export default function ExpenseView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Milling Cost ({primaryCurrency}) *</label>
               <input
                 type="number"
-                min={0.1}
+                step="any"
+                min="0"
                 required
                 value={amount}
                 onChange={(e) => setAmount(Number(e.target.value))}

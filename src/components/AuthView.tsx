@@ -3,8 +3,10 @@ import { useStore } from '../lib/store';
 import { Mail, Lock, Store, User, Key, KeyRound, ShieldAlert, ArrowRight, RefreshCw, Sparkles, Building2 } from 'lucide-react';
 
 export default function AuthView() {
-  const { login, signUp, verifyEmailCode, resendVerificationEmail, verification, loading } = useStore();
+  const { login, signUp, verifyEmailCode, resendVerificationEmail, verification } = useStore();
   const [isSignUp, setIsSignUp] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [isOfflineMode, setIsOfflineMode] = useState(localStorage.getItem('force_offline') === 'true');
   
   // Form fields
   const [email, setEmail] = useState('ac.repair.in.dubai3@gmail.com');
@@ -21,23 +23,35 @@ export default function AuthView() {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
+    setAuthLoading(true);
 
-    if (isSignUp) {
-      if (!fullName.trim() || !shopName.trim() || !email.trim()) {
-        setFeedback({ type: 'err', msg: 'Please fill in all registration fields.' });
-        return;
-      }
-      const res = await signUp(email, password, fullName, shopName);
-      if (res.success) {
-        setFeedback({ type: 'success', msg: res.msg });
+    try {
+      if (isSignUp) {
+        if (!fullName.trim() || !shopName.trim() || !email.trim()) {
+          setFeedback({ type: 'err', msg: 'Please fill in all registration fields.' });
+          setAuthLoading(false);
+          return;
+        }
+        const res = await signUp(email, password, fullName, shopName);
+        if (res.success) {
+          setFeedback({ type: 'success', msg: res.msg });
+        } else {
+          setFeedback({ type: 'err', msg: res.msg });
+        }
       } else {
-        setFeedback({ type: 'err', msg: res.msg });
+        const res = await login(email, password);
+        if (!res.success) {
+          setFeedback({ type: 'err', msg: res.msg });
+        }
       }
-    } else {
-      const res = await login(email, password);
-      if (!res.success) {
-        setFeedback({ type: 'err', msg: res.msg });
-      }
+    } catch (err: any) {
+      console.error('Authentication process encountered an unexpected failure:', err);
+      setFeedback({ 
+        type: 'err', 
+        msg: `Connection Exception: ${err.message || 'The server rejected this connection request. Ensure your node ports are reachable.'}` 
+      });
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -48,21 +62,35 @@ export default function AuthView() {
       setFeedback({ type: 'err', msg: 'Please enter the 6-digit confirmation code.' });
       return;
     }
-    const res = await verifyEmailCode(otpCode.trim());
-    if (res.success) {
-      setFeedback({ type: 'success', msg: res.msg });
-    } else {
-      setFeedback({ type: 'err', msg: res.msg });
+    setAuthLoading(true);
+    try {
+      const res = await verifyEmailCode(otpCode.trim());
+      if (res.success) {
+        setFeedback({ type: 'success', msg: res.msg });
+      } else {
+        setFeedback({ type: 'err', msg: res.msg });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'err', msg: err?.message || 'Verification process failed.' });
+    } finally {
+      setAuthLoading(false);
     }
   };
 
   const handleResend = async () => {
     setFeedback(null);
-    await resendVerificationEmail();
-    setFeedback({ 
-      type: 'success', 
-      msg: `A fresh 6-digit PIN has been dispatched. Check the simulation box below!` 
-    });
+    setAuthLoading(true);
+    try {
+      await resendVerificationEmail();
+      setFeedback({ 
+        type: 'success', 
+        msg: `A fresh 6-digit PIN has been dispatched. Check the simulation box below!` 
+      });
+    } catch (err: any) {
+      setFeedback({ type: 'err', msg: err?.message || 'Failed to resend PIN.' });
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   // If we are currently in the Verification Flow
@@ -116,7 +144,7 @@ export default function AuthView() {
               <div id="verify-buttons" className="space-y-2">
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={authLoading}
                   className="w-full flex justify-center py-2.5 px-4 rounded-xl shadow-xs text-xs font-semibold text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 transition-colors cursor-pointer"
                 >
                   Verify Verification PIN
@@ -310,10 +338,22 @@ export default function AuthView() {
             <div className="pt-2">
               <button
                 type="submit"
-                className="w-full flex justify-center items-center gap-1.5 py-2.5 px-4 rounded-xl shadow-xs text-xs font-semibold text-white bg-gray-950 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-950 transition-colors cursor-pointer"
+                disabled={authLoading}
+                className={`w-full flex justify-center items-center gap-1.5 py-2.5 px-4 rounded-xl shadow-xs text-xs font-semibold text-white transition-colors cursor-pointer ${
+                  authLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-950 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-950'
+                }`}
               >
-                <span>{isSignUp ? 'Initiate Register & Verify' : 'Enter Dashboard'}</span>
-                <ArrowRight className="h-4 w-4" />
+                {authLoading ? (
+                  <>
+                    <RefreshCw className="h-4.5 w-4.5 animate-spin text-white" />
+                    <span>Signing in, please wait...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{isSignUp ? 'Initiate Register & Verify' : 'Enter Dashboard'}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
               </button>
             </div>
           </form>
@@ -330,6 +370,7 @@ export default function AuthView() {
 
             <div className="mt-4 text-center">
               <button
+                type="button"
                 onClick={() => {
                   setIsSignUp(!isSignUp);
                   setFeedback(null);
@@ -340,10 +381,65 @@ export default function AuthView() {
               </button>
             </div>
           </div>
+
+          {/* Connection Mode Toggle Slider */}
+          <div className="mt-5 border-t border-gray-100 pt-4" id="db-mode-selector-container">
+            <div className="flex items-center justify-between bg-gray-50 border border-gray-150 p-3 rounded-xl">
+              <div className="text-left">
+                <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest leading-none">Database Engine</span>
+                <span className={`inline-flex items-center gap-1.5 text-xs font-extrabold mt-1.5 ${isOfflineMode ? 'text-amber-600' : 'text-emerald-600'}`}>
+                  <span className={`h-2.5 w-2.5 rounded-full ${isOfflineMode ? 'bg-amber-550 animate-pulse' : 'bg-emerald-555 animate-pulse'}`} />
+                  {isOfflineMode ? 'Offline Local Sandbox' : 'Online Live Supabase'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const toOffline = !isOfflineMode;
+                  setIsOfflineMode(toOffline);
+                  if (toOffline) {
+                    localStorage.setItem('force_offline', 'true');
+                  } else {
+                    localStorage.removeItem('force_offline');
+                  }
+                  window.location.reload();
+                }}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition duration-150 ease-in-out cursor-pointer shadow-3xs hover:scale-[1.02] ${
+                  isOfflineMode 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                    : 'bg-amber-600 hover:bg-amber-700 text-white'
+                }`}
+              >
+                {isOfflineMode ? 'Run Live Cloud' : 'Work Offline (Instant)'}
+              </button>
+            </div>
+          </div>
+          
+          {/* Custom URL Override connection troubleshooter card */}
+          {!!(localStorage.getItem('supa_url_override') || localStorage.getItem('supa_key_override')) && (
+            <div className="mt-5 p-3.5 bg-red-50 border border-red-200 rounded-xl text-left">
+              <span className="block text-[10px] font-bold text-red-800 uppercase tracking-widest mb-1">Custom Database Active</span>
+              <p className="text-[10.5px] text-red-700 leading-relaxed mb-3">
+                You are connecting via a custom Supabase database config. If connection fails or database schemas are not migrated, the sign-in button will be unable to connect.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.removeItem('supa_url_override');
+                  localStorage.removeItem('supa_key_override');
+                  localStorage.removeItem('logged_in_user_email');
+                  window.location.reload();
+                }}
+                className="w-full text-center py-2 px-3 bg-red-650 hover:bg-red-700 text-white rounded-xl text-[10px] font-bold transition shadow-2xs"
+              >
+                Clear Custom DB Overrides & Recover Local Sandbox
+              </button>
+            </div>
+          )}
           
           <div className="mt-6 p-3 bg-gray-50 border border-gray-150 rounded-xl">
             <span className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Developer Fast-Track Credentials</span>
-            <div className="text-[11px] text-gray-650 flex flex-col gap-1">
+            <div className="text-[11px] text-gray-650 flex flex-col gap-1 text-left">
               <div><span className="font-semibold text-gray-800">Demo User:</span> <code className="bg-gray-200 text-gray-800 px-1 rounded font-mono">ac.repair.in.dubai3@gmail.com</code></div>
               <div><span className="font-semibold text-gray-800">Passcode:</span> <code className="bg-gray-200 text-gray-800 px-1 rounded font-mono">password123</code></div>
             </div>

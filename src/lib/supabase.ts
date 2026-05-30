@@ -16,6 +16,15 @@ const getSupabaseConfig = () => {
   // Also check local storage for runtime customization in the UI
   const storedUrl = localStorage.getItem('supa_url_override');
   const storedKey = localStorage.getItem('supa_key_override');
+  const forceOffline = localStorage.getItem('force_offline') === 'true';
+
+  if (forceOffline) {
+    return {
+      url: '',
+      key: '',
+      isOnline: false
+    };
+  }
 
   return {
     url: storedUrl || envUrl || '',
@@ -76,7 +85,7 @@ class LocalDB {
           phone: '+92 300 1234567',
           address: 'Main Bazaar Road, Block 4, Lahore',
           currency: 'PKR',
-          tax_rate: 5,
+          tax_rate: 0,
           invoice_footer: 'Thank you for your business! Fresh flour is health.',
           subscription_status: 'trial',
           created_at: new Date().toISOString(),

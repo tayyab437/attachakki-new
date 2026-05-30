@@ -25,8 +25,11 @@ export default function SalesPOSView() {
   // Completed sale details (for printable receipt modal)
   const [completedSaleId, setCompletedSaleId] = useState<string | null>(null);
 
+  // Buffer raw text for buy-by-amount typing to avoid annoying decimal cursor drift
+  const [amountInputs, setAmountInputs] = useState<Record<string, string>>({});
+
   const primaryCurrency = currentShop?.currency || 'PKR';
-  const taxRate = currentShop?.tax_rate || 5;
+  const taxRate = currentShop?.tax_rate ?? 0;
 
   // Search filtered products (only showing products in stock)
   const availableProducts = useMemo(() => {
@@ -51,22 +54,41 @@ export default function SalesPOSView() {
       }
       return [...prev, { product_id: productId, quantity: 1 }];
     });
+
+    // Wipe manual amount buffer when product count increments
+    setAmountInputs(prev => {
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
   };
 
   const updateCartQuantity = (productId: string, val: number) => {
     setCart(prev => {
       return prev.map(item => {
         if (item.product_id === productId) {
-          const finalQty = Math.max(0.1, parseFloat((item.quantity + val).toFixed(2)));
+          const finalQty = Math.max(0.01, parseFloat((item.quantity + val).toFixed(2)));
           return { ...item, quantity: finalQty };
         }
         return item;
       });
     });
+
+    // Wipe amount input cache
+    setAmountInputs(prev => {
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
   };
 
   const removeFromCart = (productId: string) => {
     setCart(prev => prev.filter(i => i.product_id !== productId));
+    setAmountInputs(prev => {
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
   };
 
   // Computations
@@ -118,6 +140,7 @@ export default function SalesPOSView() {
       setCompletedSaleId(createdId);
       // Reset POS Cart
       setCart([]);
+      setAmountInputs({});
       setCustomerId('');
       setWalkInName('');
       setDiscount(0);
@@ -187,8 +210,8 @@ export default function SalesPOSView() {
                     {primaryCurrency} {prod.sale_price.toLocaleString()} <span className="text-[10px] text-gray-500 font-normal">/ {prod.unit}</span>
                   </span>
 
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${prod.stock <= prod.min_stock_alert ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'}`}>
-                    {isOutOfStock ? 'Out Of Stock' : `${prod.stock} ${prod.unit}`}
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${prod.stock <= prod.min_stock_alert ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-gray-100 text-gray-700'}`}>
+                    {isOutOfStock ? 'Out Of Stock' : `${Number(prod.stock).toFixed(2)} ${prod.unit}`}
                   </span>
                 </div>
               </button>
@@ -258,11 +281,11 @@ export default function SalesPOSView() {
                       <div className="truncate max-w-[60%]">
                         <span className="font-bold text-gray-900 block truncate">{line.product_name}</span>
                         <span className="text-[10px] text-gray-400 font-mono">
-                          {line.quantity} {line.unit} × {primaryCurrency} {line.unit_price}
+                          {Number(line.quantity).toFixed(2)} {line.unit} × {primaryCurrency} {line.unit_price}
                         </span>
                       </div>
                       <span className="font-bold font-mono text-gray-950 self-center">
-                        {primaryCurrency} {line.total.toLocaleString()}
+                        {primaryCurrency} {line.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                   ))}
@@ -330,9 +353,8 @@ export default function SalesPOSView() {
                 <ShoppingCart className="h-4 w-4 text-orange-600" />
                 <span>Active Sales Cart</span>
               </h3>
-
-              {/* Cart Table */}
-              <div className="space-y-2 max-h-[190px] overflow-y-auto pr-1">
+               {/* Cart Table */}
+              <div className="space-y-3.5 max-h-[260px] overflow-y-auto pr-1">
                 {cart.length === 0 ? (
                   <div className="py-8 text-center text-xs text-gray-400">
                     Cart is currently empty. Click options on the left.
@@ -344,42 +366,119 @@ export default function SalesPOSView() {
                     const total = item.quantity * prod.sale_price;
 
                     return (
-                      <div key={item.product_id} className="p-2.5 bg-gray-50 border border-gray-200/50 rounded-xl flex items-center justify-between text-xs gap-2">
-                        <div className="max-w-[50%]">
-                          <span className="block font-bold text-gray-900 truncate">{prod.name}</span>
-                          <span className="block text-[10px] text-gray-500 font-mono">
-                            {primaryCurrency} {prod.sale_price} / {prod.unit}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-1 shrink-0">
+                      <div key={item.product_id} className="p-3 bg-gray-50 border border-gray-150 rounded-2xl flex flex-col gap-2 text-xs text-left">
+                        {/* Title & Remove btn */}
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="truncate max-w-[80%]">
+                            <span className="block font-bold text-gray-900 truncate">{prod.name}</span>
+                            <span className="block text-[10px] text-gray-400 font-mono">
+                              Unit Price: {primaryCurrency} {prod.sale_price} / {prod.unit}
+                            </span>
+                          </div>
                           <button 
-                            onClick={() => updateCartQuantity(item.product_id, -1)}
-                            className="p-1 hover:bg-gray-200 rounded text-gray-600 cursor-pointer"
-                            title="Decrease"
-                          >
-                            <Minus className="h-3 w-3" />
-                          </button>
-                          <span className="font-bold text-xs px-2 w-7 text-center font-mono">
-                            {item.quantity}
-                          </span>
-                          <button 
-                            onClick={() => updateCartQuantity(item.product_id, 1)}
-                            className="p-1 hover:bg-gray-200 rounded text-gray-600 cursor-pointer"
-                            title="Increase"
-                          >
-                            <Plus className="h-3 w-3" />
-                          </button>
-                        </div>
-
-                        <div className="text-right shrink-0">
-                          <span className="block font-bold text-gray-900 font-mono">{primaryCurrency} {total.toLocaleString()}</span>
-                          <button 
+                            type="button"
                             onClick={() => removeFromCart(item.product_id)}
-                            className="text-[10px] text-red-500 hover:text-red-700 font-bold cursor-pointer"
+                            className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                            title="Remove item"
                           >
-                            Remove
+                            <Trash2 className="h-4 w-4" />
                           </button>
+                        </div>
+
+                        {/* Interactive adjustment controls */}
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100">
+                          {/* 1. Buy Quantity */}
+                          <div>
+                            <label className="block text-[8.5px] font-bold text-gray-450 uppercase mb-0.5 tracking-wider">Buy Quantity ({prod.unit})</label>
+                            <div className="flex items-center border border-gray-200 rounded-lg bg-white overflow-hidden shadow-2xs">
+                              <button 
+                                type="button"
+                                onClick={() => updateCartQuantity(item.product_id, -1)}
+                                className="p-1 px-1.5 hover:bg-gray-100 text-gray-600 transition cursor-pointer shrink-0"
+                              >
+                                <Minus className="h-2.5 w-2.5" />
+                              </button>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0.01"
+                                value={item.quantity === 0 ? '' : item.quantity}
+                                onChange={(e) => {
+                                  const rawVal = parseFloat(e.target.value);
+                                  setCart(prev => prev.map(c => 
+                                    c.product_id === item.product_id ? { ...c, quantity: isNaN(rawVal) ? 0 : parseFloat(rawVal.toFixed(2)) } : c
+                                  ));
+                                  // Invalidate cache
+                                  setAmountInputs(prev => {
+                                    const next = { ...prev };
+                                    delete next[item.product_id];
+                                    return next;
+                                  });
+                                }}
+                                className="w-full text-center border-0 p-0.5 text-xs font-bold font-mono text-gray-800 bg-transparent focus:ring-0 focus:outline-none min-w-[30px]"
+                              />
+                              <button 
+                                type="button"
+                                onClick={() => updateCartQuantity(item.product_id, 1)}
+                                className="p-1 px-1.5 hover:bg-gray-100 text-gray-650 transition cursor-pointer shrink-0"
+                              >
+                                <Plus className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          </div>
+                           {/* 2. Buy by cash amount */}
+                          <div>
+                            <label className="block text-[8.5px] font-bold text-gray-450 uppercase mb-0.5 tracking-wider">Buy by Amount ({primaryCurrency})</label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="e.g. 800"
+                              value={
+                                amountInputs[item.product_id] !== undefined
+                                  ? amountInputs[item.product_id]
+                                  : item.quantity === 0
+                                  ? ''
+                                  : parseFloat((item.quantity * prod.sale_price).toFixed(2))
+                              }
+                              onChange={(e) => {
+                                const valStr = e.target.value;
+                                setAmountInputs(prev => ({
+                                  ...prev,
+                                  [item.product_id]: valStr
+                                }));
+
+                                const amt = parseFloat(valStr);
+                                if (!isNaN(amt)) {
+                                  // Compute quantity based on cash split, rounded to exactly 2 decimal places
+                                  const qty = parseFloat((amt / prod.sale_price).toFixed(2));
+                                  setCart(prev => prev.map(c => 
+                                    c.product_id === item.product_id ? { ...c, quantity: qty } : c
+                                  ));
+                                } else {
+                                  setCart(prev => prev.map(c => 
+                                    c.product_id === item.product_id ? { ...c, quantity: 0 } : c
+                                  ));
+                                }
+                              }}
+                              onBlur={() => {
+                                // Clear input text buffer when clicking away so that it displays the normalized mathematical total
+                                setAmountInputs(prev => {
+                                  const next = { ...prev };
+                                  delete next[item.product_id];
+                                  return next;
+                                });
+                              }}
+                              className="w-full p-1 bg-white border border-gray-200 rounded-lg text-xs font-bold font-mono text-gray-800 focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Calculated Subtotal banner */}
+                        <div className="flex justify-between items-center bg-gray-100/50 p-1 px-2 rounded-lg text-gray-600 font-medium">
+                          <span>Subtotal:</span>
+                          <span className="font-bold text-gray-950 font-mono">
+                            {primaryCurrency} {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
                         </div>
                       </div>
                     );
@@ -439,6 +538,7 @@ export default function SalesPOSView() {
                       <label className="block text-[9px] font-bold text-gray-400 uppercase">Deposit Amount Received *</label>
                       <input
                         type="number"
+                        step="any"
                         min={0}
                         value={paidAmount}
                         onChange={(e) => setPaidAmount(Number(e.target.value))}
@@ -457,6 +557,7 @@ export default function SalesPOSView() {
                     <label className="block text-[9px] font-bold text-gray-400 uppercase">Discounts ({primaryCurrency})</label>
                     <input
                       type="number"
+                      step="any"
                       min={0}
                       value={discount === 0 ? '' : discount}
                       onChange={(e) => setDiscount(Number(e.target.value))}

@@ -148,6 +148,7 @@ export default function SupplierView() {
               <label className="block text-[10px] font-bold text-gray-400 uppercase">Opening Debt Liability ({primaryCurrency})</label>
               <input
                 type="number"
+                step="any"
                 value={initialBalance === 0 ? '' : initialBalance}
                 onChange={(e) => setInitialBalance(Number(e.target.value))}
                 className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono text-indigo-600 font-semibold"
@@ -186,6 +187,7 @@ export default function SupplierView() {
                 <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Payment Payout Amount *</label>
                 <input
                   type="number"
+                  step="any"
                   required
                   min={1}
                   max={activeSupplier.balance}

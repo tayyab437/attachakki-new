@@ -175,7 +175,7 @@ export default function DashboardView() {
             <div className="text-2xl font-extrabold text-gray-900 font-sans">
               {primaryCurrency} {stats.inventoryCostWorth.toLocaleString(undefined, { minimumFractionDigits: 0 })}
             </div>
-            <span className="text-[10px] text-gray-500 block">Total stock: {products.reduce((acc, p) => acc + p.stock, 0).toLocaleString()} item units</span>
+            <span className="text-[10px] text-gray-500 block">Total stock: {products.reduce((acc, p) => acc + p.stock, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} item units</span>
           </div>
           <div className="h-11 w-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
             <Package className="h-5 w-5" />

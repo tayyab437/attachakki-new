@@ -11,12 +11,13 @@ export default function SettingsView() {
   const [shopName, setShopName] = useState(currentShop?.name || '');
   const [phone, setPhone] = useState(currentShop?.phone || '');
   const [address, setAddress] = useState(currentShop?.address || '');
-  const [taxRate, setTaxRate] = useState<number>(currentShop?.tax_rate || 5);
+  const [taxRate, setTaxRate] = useState<number>(currentShop?.tax_rate ?? 0);
   const [invoiceFooter, setInvoiceFooter] = useState(currentShop?.invoice_footer || '');
   const [currency, setCurrency] = useState(currentShop?.currency || 'PKR');
 
   // Status message
   const [msg, setMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Synchronize React state hooks when currentShop updates dynamically (fixes empty settings fields upon initial mount)
   useEffect(() => {
@@ -24,7 +25,7 @@ export default function SettingsView() {
       setShopName(currentShop.name || '');
       setPhone(currentShop.phone || '');
       setAddress(currentShop.address || '');
-      setTaxRate(currentShop.tax_rate || 5);
+      setTaxRate(currentShop.tax_rate ?? 0);
       setInvoiceFooter(currentShop.invoice_footer || '');
       setCurrency(currentShop.currency || 'PKR');
     }
@@ -32,6 +33,8 @@ export default function SettingsView() {
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    setMsg('');
+    setErrorMsg('');
     try {
       await updateShopProfile({
         name: shopName,
@@ -42,11 +45,11 @@ export default function SettingsView() {
         currency
       });
       setMsg('Shop business metrics modified successfully.');
-      setTimeout(() => setMsg(''), 4000);
+      setTimeout(() => setMsg(''), 5000);
     } catch (err: any) {
       console.error(err);
-      setMsg('Could not save custom shop settings.');
-      setTimeout(() => setMsg(''), 4000);
+      setErrorMsg(err.message || 'Could not save custom shop settings. Falling back to local offline safety.');
+      setTimeout(() => setErrorMsg(''), 7000);
     }
   };
 
@@ -69,6 +72,13 @@ export default function SettingsView() {
           <div className="p-3 bg-emerald-50 text-emerald-800 border border-emerald-100 rounded-xl text-xs flex items-center gap-2 transition-all">
             <CheckCircle className="h-4 w-4 text-emerald-600 animate-pulse" />
             <span className="font-semibold">{msg}</span>
+          </div>
+        )}
+
+        {errorMsg && (
+          <div className="p-3 bg-red-50 text-red-800 border border-red-100 rounded-xl text-xs flex items-center gap-2 transition-all">
+            <div className="h-4 w-4 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold shrink-0 text-[10px]">!</div>
+            <span className="font-semibold">Notice: {errorMsg}</span>
           </div>
         )}
 

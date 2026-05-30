@@ -23,6 +23,7 @@ interface AppStore {
   currentUser: Profile | null;
   currentShop: Shop | null;
   allShops: Shop[]; // for Super Admin mode
+  allProfiles: Profile[]; // for Super Admin mode
   userRoles: { [uid: string]: UserRole };
   verification: VerificationState;
 
@@ -105,6 +106,10 @@ interface AppStore {
 
   // Super Admin controls
   toggleShopStatus: (shopId: string) => Promise<void>;
+  createShopAdmin: (name: string, phone: string, address: string, currency: string) => Promise<void>;
+  createUserAdmin: (data: { email: string; full_name: string; role: UserRole; shop_id: string; password?: string }) => Promise<void>;
+  updateUserAdmin: (id: string, data: Partial<Profile>) => Promise<void>;
+  switchShopWorkspace: (shopId: string, userId?: string) => Promise<void>;
 }
 
 /**
@@ -114,14 +119,17 @@ interface AppStore {
 export async function executeDbWithRetry<T>(
   operationName: string,
   op: () => Promise<any>,
-  maxRetries = 3
+  maxRetries = 2
 ): Promise<any> {
   let attempt = 0;
   const initialDelay = 500; // ms
   
   while (true) {
     try {
-      const result = await op();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Connection Timeout (4.5s limit)')), 4500)
+      );
+      const result = await Promise.race([op(), timeoutPromise]);
       
       // If there is no error block, then execution is clean and valid.
       if (!result || !result.error) {
@@ -144,10 +152,12 @@ export async function executeDbWithRetry<T>(
                         errorMsg.includes('failed to fetch') ||
                         error.status === 0;
 
-      if ((isRLS || isNetwork) && attempt < maxRetries) {
+      // Only attempt retries for genuine network/timeout connection issues.
+      // Static permissions/RLS or database structure schema errors will fail immediately to avoid blocking or delaying client feedback.
+      if (isNetwork && attempt < maxRetries) {
         attempt++;
         const backoffDelay = initialDelay * Math.pow(2, attempt - 1) * (0.85 + Math.random() * 0.3);
-        console.warn(`[RETRY ENGINE] '${operationName}' failed with ${isRLS ? 'RLS Policy' : 'Network'} block. Re-establishing session context and retrying in ${Math.round(backoffDelay)}ms (Attempt ${attempt}/${maxRetries})...`);
+        console.warn(`[RETRY ENGINE] '${operationName}' failed with Network block. Re-establishing session context and retrying in ${Math.round(backoffDelay)}ms (Attempt ${attempt}/${maxRetries})...`);
         
         // Attempt to re-establish session context
         if (rawSupabase) {
@@ -166,11 +176,14 @@ export async function executeDbWithRetry<T>(
         continue;
       }
       
-      // If error is persistent and retries are exhausted
-      if (attempt >= maxRetries) {
-        console.error(`[RETRY ENGINE] DB transaction '${operationName}' permanently failed on ${maxRetries} backoffs.`);
+      // If error is persistent or not a dynamic network issue (e.g. static RLS policy limits, missing table/relation)
+      const opLower = operationName.toLowerCase();
+      const isCritical = opLower.includes('profile') || opLower.includes('shop');
+      
+      if (isCritical) {
+        console.error(`[RETRY ENGINE] Critical DB transaction '${operationName}' permanently failed.`);
         const textHelp = 'Go to System Settings to ensure your Live Supabase container or local connection rules are established.';
-        const customMessage = `Persistent ${isRLS ? 'Security/RLS Policy' : 'Network'} error on ${operationName}: ${error.message || 'Permission Denied'}. ${textHelp}`;
+        const customMessage = `Persistent Security/RLS or Schema error on ${operationName}: ${error.message || 'Permission Denied'}. ${textHelp}`;
         
         // Update store error states
         useStore.setState({ errorMessage: customMessage });
@@ -191,33 +204,46 @@ export async function executeDbWithRetry<T>(
             ...currentNotifs
           ]
         });
+      } else {
+        // Log minor warning for optional / secondary table queries (like expenses, activity logs)
+        console.warn(`[RETRY ENGINE] Secondary table database operation warning on '${operationName}': ${error.message || 'Blocked by RLS or Missing Table error'}`);
       }
       return result;
     } catch (caughtErr: any) {
-      if (attempt < maxRetries) {
+      const isNetwork = String(caughtErr.message || '').toLowerCase().includes('fetch') || 
+                        String(caughtErr.message || '').toLowerCase().includes('network') ||
+                        String(caughtErr.message || '').toLowerCase().includes('timeout');
+                        
+      if (isNetwork && attempt < maxRetries) {
         attempt++;
         const backoffDelay = initialDelay * Math.pow(2, attempt - 1) * (0.85 + Math.random() * 0.3);
         await new Promise((resolve) => setTimeout(resolve, backoffDelay));
         continue;
       }
       const crashMsg = `Untracked backend crash on '${operationName}': ${caughtErr.message}`;
-      useStore.setState({ errorMessage: crashMsg });
+      const opLower = operationName.toLowerCase();
+      const isCritical = opLower.includes('profile') || opLower.includes('shop');
       
-      const currentNotifs = useStore.getState().notifications || [];
-      useStore.setState({
-        notifications: [
-          {
-            id: `db-crash-${Date.now()}`,
-            shop_id: useStore.getState().currentShop?.id || 'sys',
-            title: 'Critical Database Crash',
-            message: crashMsg,
-            type: 'credit_alert',
-            read: false,
-            created_at: new Date().toISOString()
-          },
-          ...currentNotifs
-        ]
-      });
+      if (isCritical) {
+        useStore.setState({ errorMessage: crashMsg });
+        const currentNotifs = useStore.getState().notifications || [];
+        useStore.setState({
+          notifications: [
+            {
+              id: `db-crash-${Date.now()}`,
+              shop_id: useStore.getState().currentShop?.id || 'sys',
+              title: 'Critical Database Crash',
+              message: crashMsg,
+              type: 'credit_alert',
+              read: false,
+              created_at: new Date().toISOString()
+            },
+            ...currentNotifs
+          ]
+        });
+      } else {
+        console.warn(`[RETRY ENGINE] Secondary table backend crash on '${operationName}': ${caughtErr.message}`);
+      }
       return { data: null, error: caughtErr };
     }
   }
@@ -285,6 +311,7 @@ export const useStore = create<AppStore>((set, get) => ({
   currentUser: null,
   currentShop: null,
   allShops: [],
+  allProfiles: [],
   userRoles: {},
   appMode: 'demo',
   loading: false,
@@ -338,6 +365,7 @@ export const useStore = create<AppStore>((set, get) => ({
             currentUser: matchedProfile,
             currentShop: associatedShop,
             allShops: shops || [],
+            allProfiles: profiles || [],
             appMode: 'live_supabase',
             loading: false
           });
@@ -354,7 +382,7 @@ export const useStore = create<AppStore>((set, get) => ({
             phone: '+92 300 1234567',
             address: 'Main Bazaar Road, Block 4, Lahore',
             currency: 'PKR',
-            tax_rate: 5,
+            tax_rate: 0,
             invoice_footer: 'Thank you for your business! Fresh flour is health.',
             subscription_status: 'trial'
           }]);
@@ -409,6 +437,7 @@ export const useStore = create<AppStore>((set, get) => ({
             currentUser: seededOwner as any,
             currentShop: liveShops.data?.[0] || null,
             allShops: liveShops.data || [],
+            allProfiles: [seededOwner as any],
             appMode: 'live_supabase',
             loading: false
           });
@@ -428,13 +457,14 @@ export const useStore = create<AppStore>((set, get) => ({
     const profiles = localDB.getCollection<Profile>('profiles');
     const shops = localDB.getCollection<Shop>('shops');
     
-    const firstOwner = profiles.find(p => p.role === 'owner');
+    const firstOwner = profiles.find(p => p.role === 'owner') || profiles[0];
     if (firstOwner) {
-      const associatedShop = shops.find(s => s.id === firstOwner.shop_id) || null;
+      const associatedShop = shops.find(s => s.id === firstOwner.shop_id) || shops[0] || null;
       set({ 
         currentUser: firstOwner, 
         currentShop: associatedShop,
         allShops: shops,
+        allProfiles: profiles,
         appMode: 'demo'
       });
       get().refreshData();
@@ -450,15 +480,20 @@ export const useStore = create<AppStore>((set, get) => ({
       try {
         const fetchTable = async (tableName: string) => {
           const dbTableName = tableName === 'categories' ? 'product_categories' : tableName;
-          const { data, error } = await supabase
-            .from(dbTableName)
-            .select('*')
-            .eq('shop_id', shop.id);
-          if (error) {
-            console.warn(`Live DB error fetching ${tableName}:`, error);
-            return [];
+          try {
+            const { data, error } = await supabase
+              .from(dbTableName)
+              .select('*')
+              .eq('shop_id', shop.id);
+            if (error) {
+              console.warn(`Live DB error fetching ${tableName}, falling back to LocalDB:`, error);
+              return localDB.getCollection<any>(tableName) || [];
+            }
+            return data || [];
+          } catch (e) {
+            console.warn(`Exception fetching ${tableName} from Live DB, falling back to LocalDB:`, e);
+            return localDB.getCollection<any>(tableName) || [];
           }
-          return data || [];
         };
 
         const [
@@ -495,14 +530,20 @@ export const useStore = create<AppStore>((set, get) => ({
         const localSettingsRaw = localStorage.getItem('flour_db_settings');
         const localSettings = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
 
-        const { data: settingsData } = await supabase
-          .from('settings')
-          .select('*')
-          .eq('shop_id', shop.id)
-          .maybeSingle();
-        if (settingsData) {
-          settingsObj = { ...localSettings, ...settingsData };
-        } else {
+        try {
+          const { data: settingsData, error: setErr } = await supabase
+            .from('settings')
+            .select('*')
+            .eq('shop_id', shop.id)
+            .maybeSingle();
+            
+          if (settingsData && !setErr) {
+            settingsObj = { ...localSettings, ...settingsData };
+          } else {
+            settingsObj = localSettings;
+          }
+        } catch (err) {
+          console.warn('Supabase settings table could not be fetched, falling back to local settings:', err);
           settingsObj = localSettings;
         }
 
@@ -570,7 +611,7 @@ export const useStore = create<AppStore>((set, get) => ({
           phone: '',
           address: '',
           currency: 'PKR',
-          tax_rate: 5,
+          tax_rate: 0,
           invoice_footer: 'Thank you for your business!',
           subscription_status: 'trial',
           created_at: new Date().toISOString(),
@@ -629,19 +670,22 @@ export const useStore = create<AppStore>((set, get) => ({
           throw prodErr;
         }
 
-        const { error: setErr } = await supabase.from('settings').insert([{
-          shop_id: newShopId,
-          theme: 'light',
-          language: 'en',
-          print_size: 'thermal_80mm',
-          enable_whatsapp_alert: true,
-          sms_api_key: '',
-          tax_registered: true,
-          tax_id: 'NTN-82910-82B-9'
-        }]);
-        if (setErr) {
-          (setErr as any).tableName = 'settings';
-          throw setErr;
+        try {
+          const { error: setErr } = await supabase.from('settings').insert([{
+            shop_id: newShopId,
+            theme: 'light',
+            language: 'en',
+            print_size: 'thermal_80mm',
+            enable_whatsapp_alert: true,
+            sms_api_key: '',
+            tax_registered: true,
+            tax_id: 'NTN-82910-82B-9'
+          }]);
+          if (setErr) {
+            console.warn('Registration notice: settings table insert warning. Settings will fall back to offline local storage.', setErr);
+          }
+        } catch (settingsError) {
+          console.warn('settings table insert warning caught. Settings will fall back to offline local storage.', settingsError);
         }
 
         localStorage.setItem('logged_in_user_email', email.trim().toLowerCase());
@@ -725,7 +769,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
         phone: '',
         address: '',
         currency: 'PKR',
-        tax_rate: 5,
+        tax_rate: 0,
         invoice_footer: 'Thank you for your business!',
         subscription_status: 'trial',
         created_at: new Date().toISOString(),
@@ -883,7 +927,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       }
     } else {
       const profiles = localDB.getCollection<Profile>('profiles');
-      const user = profiles.find(p => p.email.toLowerCase() === email.toLowerCase());
+      const user = profiles.find(p => p.email.toLowerCase().trim() === email.trim().toLowerCase());
 
       if (!user) {
         set({ loading: false });
@@ -1470,7 +1514,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       for (const line of data.items) {
         const pIdx = products.findIndex(p => p.id === line.product_id);
         if (pIdx === -1) continue;
-        products[pIdx].stock = Math.max(0, products[pIdx].stock - line.quantity);
+        products[pIdx].stock = Math.max(0, parseFloat((products[pIdx].stock - line.quantity).toFixed(2)));
         products[pIdx].updated_at = new Date().toISOString();
 
         if (products[pIdx].stock <= products[pIdx].min_stock_alert) {
@@ -1868,6 +1912,11 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       created_at: new Date().toISOString()
     };
 
+    // Keep LocalDB copy up to date as offline fallback
+    const expensesColl = localDB.getCollection<Expense>('expenses');
+    expensesColl.push(newExp);
+    localDB.saveCollection('expenses', expensesColl);
+
     // Optimistic Update: instantly add expense to visual table
     set({
       expenses: [...get().expenses, newExp]
@@ -1885,14 +1934,15 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
         }
       })();
     } else {
-      const expenses = localDB.getCollection<Expense>('expenses');
-      expenses.push(newExp);
-      localDB.saveCollection('expenses', expenses);
       get().refreshData();
     }
   },
 
   deleteExpense: async (id) => {
+    // Keep LocalDB copy up to date as offline fallback
+    const expensesColl = localDB.getCollection<Expense>('expenses').filter(e => e.id !== id);
+    localDB.saveCollection('expenses', expensesColl);
+
     // Optimistic Update: instantly remove expense from table
     set({
       expenses: get().expenses.filter(e => e.id !== id)
@@ -1910,8 +1960,6 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
         }
       })();
     } else {
-      const expenses = localDB.getCollection<Expense>('expenses').filter(e => e.id !== id);
-      localDB.saveCollection('expenses', expenses);
       get().refreshData();
     }
   },
@@ -1997,8 +2045,11 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
     const merged = { ...shop, ...data, updated_at: new Date().toISOString() };
 
-    // Optimistically update currentShop immediately
-    set({ currentShop: merged });
+    // Optimistically update currentShop and allShops immediately
+    set({ 
+      currentShop: merged,
+      allShops: get().allShops.map(s => s.id === shop.id ? merged : s)
+    });
 
     // Save fallback info locally
     const shops = localDB.getCollection<Shop>('shops');
@@ -2013,10 +2064,12 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       try {
         const { error } = await supabase.from('shops').update(data).eq('id', shop.id);
         if (error) {
-          console.warn('Silent live DB update shop profile error, fell back to local storage:', error);
+          console.warn('Live DB update shop profile error, fell back to local storage:', error);
+          throw new Error(error.message || 'Supabase permission/constraint issue updating shops table.');
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to modify shop on Supabase:', err);
+        throw err;
       } finally {
         set({ loading: false });
       }
@@ -2049,6 +2102,122 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       }
     }
     await get().refreshData();
+  },
+
+  createShopAdmin: async (name, phone, address, currency) => {
+    const newId = crypto.randomUUID();
+    const newShop: Shop = {
+      id: newId,
+      name,
+      logo_url: null,
+      phone,
+      address,
+      currency,
+      tax_rate: 0,
+      invoice_footer: 'Thank you for your business!',
+      subscription_status: 'trial',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    if (config.isOnline && supabase) {
+      try {
+        const { error } = await supabase.from('shops').insert([newShop]);
+        if (error) throw error;
+        const { data } = await supabase.from('shops').select('*');
+        if (data) set({ allShops: data });
+      } catch (err) {
+        console.error('Failed to create shop on Supabase:', err);
+      }
+    } else {
+      const shops = localDB.getCollection<Shop>('shops');
+      shops.push(newShop);
+      localDB.saveCollection('shops', shops);
+      set({ allShops: shops });
+    }
+  },
+
+  createUserAdmin: async (data) => {
+    const newId = crypto.randomUUID();
+    const newProfile: Profile = {
+      id: newId,
+      shop_id: data.shop_id,
+      email: data.email.trim().toLowerCase(),
+      full_name: data.full_name,
+      role: data.role,
+      avatar_url: null,
+      is_verified: true,
+      created_at: new Date().toISOString(),
+      password: data.password || '1234'
+    };
+    if (config.isOnline && supabase) {
+      try {
+        const { error } = await supabase.from('profiles').insert([newProfile]);
+        if (error) throw error;
+        const { data: list } = await supabase.from('profiles').select('*');
+        if (list) set({ allProfiles: list });
+      } catch (err) {
+        console.warn('Failed to insert user profile in Supabase:', err);
+      }
+    } else {
+      const profiles = localDB.getCollection<Profile>('profiles');
+      profiles.push(newProfile);
+      localDB.saveCollection('profiles', profiles);
+      set({ allProfiles: profiles });
+    }
+  },
+
+  updateUserAdmin: async (id, data) => {
+    if (config.isOnline && supabase) {
+      try {
+        const { error } = await supabase.from('profiles').update(data).eq('id', id);
+        if (error) throw error;
+        const { data: list } = await supabase.from('profiles').select('*');
+        if (list) set({ allProfiles: list });
+      } catch (err) {
+        console.error('Failed to update profile on Supabase:', err);
+      }
+    } else {
+      const profiles = localDB.getCollection<Profile>('profiles');
+      const idx = profiles.findIndex(p => p.id === id);
+      if (idx !== -1) {
+        profiles[idx] = { ...profiles[idx], ...data };
+        localDB.saveCollection('profiles', profiles);
+        set({ allProfiles: profiles });
+      }
+    }
+  },
+
+  switchShopWorkspace: async (shopId, userId) => {
+    const shop = get().allShops.find(s => s.id === shopId) || null;
+    if (!shop) return;
+    
+    let user: Profile | null = null;
+    if (userId) {
+      user = get().allProfiles.find(p => p.id === userId) || null;
+    }
+    if (!user) {
+      user = get().allProfiles.find(p => p.shop_id === shopId) || null;
+    }
+    
+    if (!user) {
+      const email = `manager-${shopId.slice(0, 5)}@gmail.com`;
+      await get().createUserAdmin({
+        email,
+        full_name: `${shop.name} Manager`,
+        role: 'manager',
+        shop_id: shopId,
+        password: '1234'
+      });
+      user = get().allProfiles.find(p => p.shop_id === shopId) || null;
+    }
+
+    if (user) {
+      set({
+        currentShop: shop,
+        currentUser: user
+      });
+      await get().refreshData();
+    }
   },
 
   /**

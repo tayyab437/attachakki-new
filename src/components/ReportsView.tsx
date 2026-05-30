@@ -204,7 +204,7 @@ export default function ReportsView() {
                       <tr key={p.id}>
                         <td className="py-2 font-bold text-gray-950">{p.name}</td>
                         <td className="py-2 text-center font-mono text-[10px] text-gray-450">{p.sku}</td>
-                        <td className="py-2 text-center font-bold font-mono">{p.stock} <span className="text-[10px] text-gray-400 font-normal">{p.unit}</span></td>
+                        <td className="py-2 text-center font-bold font-mono">{Number(p.stock).toFixed(2)} <span className="text-[10px] text-gray-400 font-normal">{p.unit}</span></td>
                         <td className="py-2 text-right font-mono">{p.cost_price}</td>
                         <td className="py-2 text-right font-mono font-bold text-gray-900">{primaryCurrency} {costVal.toLocaleString()}</td>
                         <td className="py-2 text-right font-mono font-bold text-orange-650">{primaryCurrency} {retailVal.toLocaleString()}</td>
