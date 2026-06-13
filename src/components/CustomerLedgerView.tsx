@@ -31,10 +31,12 @@ export default function CustomerLedgerView() {
 
   // Search filtered customer list
   const filteredCustomers = useMemo(() => {
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      c.phone.includes(searchTerm)
-    );
+    return customers
+      .filter(c => 
+        c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        c.phone.includes(searchTerm)
+      )
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }, [customers, searchTerm]);
 
   // Retrieve selected customer details
@@ -42,12 +44,25 @@ export default function CustomerLedgerView() {
     return customers.find(c => c.id === activeCustomerId) || null;
   }, [customers, activeCustomerId]);
 
-  // Transactions logs for selected active customer
-  const activeTransactions = useMemo(() => {
+  // Transactions logs for selected active customer with running balances
+  const activeTransactionsWithBalance = useMemo(() => {
     if (!activeCustomerId) return [];
-    return customerTransactions
+    
+    // Sort oldest first to calculate running balance
+    const sorted = [...customerTransactions]
       .filter(tx => tx.customer_id === activeCustomerId)
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    let running = 0;
+    return sorted.map(tx => {
+      const isPayment = tx.type === 'payment_received';
+      if (isPayment) {
+        running -= tx.amount;
+      } else {
+        running += tx.amount;
+      }
+      return { ...tx, runningBalance: running };
+    });
   }, [customerTransactions, activeCustomerId]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -149,6 +164,7 @@ export default function CustomerLedgerView() {
 
             <div>
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Opening Credit ({primaryCurrency})</label>
+              <p className="text-[9px] text-gray-400 mb-1">Use negative value if shop owes customer.</p>
               <input
                 type="number"
                 step="any"
@@ -191,7 +207,9 @@ export default function CustomerLedgerView() {
               <div>
                 <span className="block text-[10px] text-gray-500 font-semibold uppercase">Payer Context</span>
                 <span className="block font-bold text-gray-900 text-sm mt-0.5">{activeCustomer.name}</span>
-                <span className="block text-[11px] text-orange-600 font-bold mt-1">Outstanding Debt Room: {primaryCurrency} {activeCustomer.balance.toLocaleString()}</span>
+                <span className={`block text-[11px] font-bold mt-1 ${activeCustomer.balance >= 0 ? 'text-orange-600' : 'text-emerald-600'}`}>
+                  {activeCustomer.balance >= 0 ? 'Outstanding Debt:' : 'Shop Owes Customer:'} {primaryCurrency} {Math.abs(activeCustomer.balance || 0).toLocaleString()}
+                </span>
               </div>
 
               <div>
@@ -201,7 +219,6 @@ export default function CustomerLedgerView() {
                   step="any"
                   required
                   min={1}
-                  max={activeCustomer.balance > 0 ? activeCustomer.balance : 1000000}
                   value={payAmount === 0 ? '' : payAmount}
                   onChange={(e) => setPayAmount(Number(e.target.value))}
                   className="w-full text-xs p-2.5 bg-gray-50 border border-gray-200 focus:outline-none focus:bg-white rounded-xl font-bold font-mono text-gray-800"
@@ -237,7 +254,7 @@ export default function CustomerLedgerView() {
                 type="submit"
                 className="w-full text-xs font-bold py-2.5 bg-gray-900 hover:bg-gray-800 text-white rounded-xl transition cursor-pointer"
               >
-                Register Remittance (PKR {payAmount.toLocaleString()})
+                Register Remittance (PKR {(payAmount || 0).toLocaleString()})
               </button>
             </form>
           </div>
@@ -245,10 +262,10 @@ export default function CustomerLedgerView() {
       )}
 
       {/* CORE SPLIT WORKSPACE GRID */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         
-        {/* ROW 1: CLIENTS SEARCH REGISTER INDEX (1/3 Grid) */}
-        <div className="bg-white border border-gray-150 rounded-2xl shadow-3xs overflow-hidden flex flex-col justify-between" id="customer-register-grid">
+        {/* ROW 1: CLIENTS SEARCH REGISTER INDEX (1/4 Grid) */}
+        <div className="bg-white border border-gray-150 rounded-2xl shadow-3xs overflow-hidden flex flex-col justify-start lg:col-span-1" id="customer-register-grid">
           <div className="p-4 border-b border-gray-100 space-y-3">
             <span className="block text-xs font-bold text-gray-900 uppercase tracking-widest">Accounts Book Directory</span>
             
@@ -266,7 +283,7 @@ export default function CustomerLedgerView() {
             </div>
           </div>
 
-          <div className="divide-y divide-gray-100 max-h-[360px] overflow-y-auto">
+          <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
             {filteredCustomers.length === 0 ? (
               <div className="py-8 text-center text-gray-400 text-xs">No customer matches.</div>
             ) : (
@@ -281,8 +298,8 @@ export default function CustomerLedgerView() {
                     <span className="block text-[10px] text-gray-400 font-medium">{cust.phone}</span>
                   </div>
 
-                  <span className={`px-2.5 py-1 text-xs font-extrabold font-mono rounded ${cust.balance > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`}>
-                    {cust.balance > 0 ? `${primaryCurrency} ${cust.balance.toLocaleString()}` : 'Settled'}
+                  <span className={`px-2 py-1 text-[10px] font-extrabold font-mono rounded ${cust.balance > 0 ? 'bg-amber-100 text-amber-800' : cust.balance < 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'}`}>
+                    {cust.balance !== 0 ? `${(cust.balance || 0).toLocaleString()}` : 'Settled'}
                   </span>
                 </button>
               ))
@@ -290,8 +307,8 @@ export default function CustomerLedgerView() {
           </div>
         </div>
 
-        {/* ROW 2: DETAILED CLIENT STATEMENTS & CREDIT MOTIONS (2/3 Grid) */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-3xs lg:col-span-2 flex flex-col justify-between space-y-4">
+        {/* ROW 2: DETAILED CLIENT STATEMENTS & CREDIT MOTIONS (3/4 Grid) */}
+        <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-3xs lg:col-span-3 flex flex-col justify-between space-y-4">
           
           {activeCustomer ? (
             <div className="space-y-4">
@@ -312,14 +329,12 @@ export default function CustomerLedgerView() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {activeCustomer.balance > 0 && (
-                    <button
-                      onClick={() => { setPayAmount(0); setShowPayForm(true); }}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer"
-                    >
-                      Receive Cash-In Payment
-                    </button>
-                  )}
+                  <button
+                    onClick={() => { setPayAmount(0); setShowPayForm(true); }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer"
+                  >
+                    Receive Payment
+                  </button>
                   <button
                     onClick={() => {
                       alert(`Printing direct invoice statement report for ${activeCustomer.name}...`);
@@ -335,39 +350,62 @@ export default function CustomerLedgerView() {
 
               {/* Transactions Ledger book table lists */}
               <div className="space-y-3">
-                <span className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest pb-1 border-b border-gray-100">Historical Credit Transactions</span>
-                <div className="max-h-[225px] overflow-y-auto space-y-2">
-                  {activeTransactions.length === 0 ? (
+                <div className="flex justify-between items-center pb-1 border-b border-gray-100">
+                  <span className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest">Historical Credit Transactions</span>
+                  <span className="text-[10px] text-gray-400 italic">Showing oldest to newest</span>
+                </div>
+                
+                <div className="max-h-[400px] overflow-y-auto space-y-1.5 pr-1">
+                  {activeTransactionsWithBalance.length === 0 ? (
                     <div className="py-12 bg-gray-50/50 border border-dashed text-center text-xs text-gray-400 rounded-xl">
                       Zero credits or payments logged for this customer.
                     </div>
                   ) : (
-                    activeTransactions.map((tx, idx) => {
-                      const isRefPay = tx.type === 'payment_received';
-                      return (
-                        <div key={idx} className="p-3 bg-white border border-gray-150 rounded-xl flex items-center justify-between text-xs transition hover:border-gray-300 gap-3">
-                          <div className="flex items-start gap-2.5">
-                            <div className={`p-1.5 rounded-lg ${isRefPay ? 'bg-emerald-50 text-emerald-650' : 'bg-orange-50 text-orange-655'}`}>
-                              {isRefPay ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
-                            </div>
-                            <div>
-                              <span className="block font-bold text-gray-900">{tx.description}</span>
-                              <span className="block text-[9px] text-gray-400 mt-0.5">
-                                {new Date(tx.created_at).toLocaleDateString()} {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                {tx.payment_method && ` | Paid via ${tx.payment_method}`}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="text-right">
-                            <span className={`block font-extrabold font-mono ${isRefPay ? 'text-emerald-700' : 'text-orange-700'}`}>
-                              {isRefPay ? '-' : '+'}{primaryCurrency} {tx.amount.toLocaleString()}
-                            </span>
-                            <span className="block text-[9px] font-medium text-gray-400 mt-0.5 uppercase tracking-wider">{tx.type.replace('_', ' ')}</span>
-                          </div>
-                        </div>
-                      );
-                    })
+                    <table className="min-w-full text-left text-xs border-separate border-spacing-y-1.5">
+                      <thead>
+                        <tr className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">
+                          <th className="px-3">Date</th>
+                          <th className="px-3">Description</th>
+                          <th className="px-3 text-right">Draft</th>
+                          <th className="px-3 text-right">Payment</th>
+                          <th className="px-3 text-right">Net Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeTransactionsWithBalance.map((tx, idx) => {
+                          const isPayment = tx.type === 'payment_received';
+                          const isOpening = tx.type === 'opening_balance';
+                          return (
+                            <tr key={idx} className="bg-white border hover:bg-gray-50 transition-colors group">
+                              <td className="px-3 py-2 border-y border-l rounded-l-xl border-gray-100 font-mono text-[10px] text-gray-500">
+                                {new Date(tx.created_at).toLocaleDateString()}
+                                <div className="text-[9px] opacity-70">{new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                              </td>
+                              <td className="px-3 py-2 border-y border-gray-100">
+                                <div className="flex items-center gap-2">
+                                  <div className={`p-1 rounded-md ${isPayment ? 'bg-emerald-50 text-emerald-600' : isOpening ? 'bg-blue-50 text-blue-600' : 'bg-orange-50 text-orange-600'}`}>
+                                    {isPayment ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                                  </div>
+                                  <div>
+                                    <span className="font-bold text-gray-900 block">{tx.description}</span>
+                                    {tx.payment_method && <span className="text-[9px] text-gray-500">Via {tx.payment_method}</span>}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 border-y border-gray-100 text-right font-mono font-bold text-orange-700">
+                                {!isPayment ? `+${(tx.amount || 0).toLocaleString()}` : '-'}
+                              </td>
+                              <td className="px-3 py-2 border-y border-gray-100 text-right font-mono font-bold text-emerald-700">
+                                {isPayment ? `-${(tx.amount || 0).toLocaleString()}` : '-'}
+                              </td>
+                              <td className="px-3 py-2 border-y border-r rounded-r-xl border-gray-100 text-right font-mono font-bold text-gray-900 group-hover:bg-gray-100">
+                                {(tx.runningBalance || 0).toLocaleString()}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   )}
                 </div>
               </div>
@@ -382,9 +420,24 @@ export default function CustomerLedgerView() {
           )}
 
           {activeCustomer && (
-            <div className="bg-gray-50 p-3 rounded-b-2xl border-t border-gray-150 text-[11px] text-gray-500 flex justify-between items-center pr-1">
-              <span>Dynamic balances calculated in realtime:</span>
-              <span className="font-bold text-gray-900 font-mono">Total Pending: {primaryCurrency} {activeCustomer.balance.toLocaleString()}</span>
+            <div className={`p-4 rounded-2xl text-[11px] flex justify-between items-center transition-all ${activeCustomer.balance >= 0 ? 'bg-orange-50 text-orange-900 border border-orange-100' : 'bg-emerald-50 text-emerald-900 border border-emerald-100'}`}>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4" />
+                <span className="font-bold uppercase tracking-wider">Statement Summary:</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="flex flex-col items-end">
+                  <span className="text-[9px] opacity-60 uppercase font-bold">Calculation Rule</span>
+                  <span className="font-semibold italic">Drafts - Payments</span>
+                </div>
+                <div className="h-8 w-[1px] bg-gray-300/30"></div>
+                <div className="flex flex-col items-end">
+                  <span className="text-[9px] opacity-60 uppercase font-bold">Current Standing</span>
+                  <span className="text-lg font-extrabold font-mono leading-none">
+                    {activeCustomer.balance >= 0 ? '+' : ''}{(activeCustomer.balance || 0).toLocaleString()}
+                  </span>
+                </div>
+              </div>
             </div>
           )}
         </div>

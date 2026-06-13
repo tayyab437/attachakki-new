@@ -11,26 +11,78 @@ import ExpenseView from './components/ExpenseView';
 import ReportsView from './components/ReportsView';
 import SettingsView from './components/SettingsView';
 import AdminView from './components/AdminView';
+import NotificationToast from './components/NotificationToast';
 
 import { 
   Building2, Home, ShoppingCart, Package, Activity, Users, Truck, 
-  Coins, FileText, Settings, ShieldAlert, LogOut, ChevronRight, UserCog, Sparkles 
+  Coins, FileText, Settings, ShieldAlert, LogOut, ChevronRight, UserCog, Sparkles, PanelLeftClose, PanelLeftOpen, RefreshCw
 } from 'lucide-react';
 
 export default function App() {
   const { 
     currentUser, currentShop, initStore, logout, startRealtimeSimulation, switchRole, settings,
-    allShops, allProfiles, switchShopWorkspace
+    allShops, allProfiles, switchShopWorkspace, errorMessage, connectionState, checkConnectivity, syncLocalToCloud
   } = useStore();
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'products' | 'stock' | 'customers' | 'suppliers' | 'expenses' | 'reports' | 'settings' | 'admin'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'products' | 'stock' | 'customers' | 'suppliers' | 'expenses' | 'reports' | 'settings' | 'admin'>(() => {
+    return (localStorage.getItem('last_active_tab') as any) || 'dashboard';
+  });
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('is_sidebar_collapsed') === 'true' || window.innerWidth < 1024;
+  });
 
   const activeTheme = settings?.theme || 'light';
+
+  useEffect(() => {
+    localStorage.setItem('last_active_tab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem('is_sidebar_collapsed', String(isSidebarCollapsed));
+  }, [isSidebarCollapsed]);
+
+  // Auto-collapse sidebar on smaller screens (below 1024px width)
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1024) {
+        setIsSidebarCollapsed(true);
+      }
+    };
+    // Initial check on mount
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Load baseline states
   useEffect(() => {
     initStore();
   }, [initStore]);
+
+  // Periodic network connectivity ping & event listeners
+  useEffect(() => {
+    const handleConnectivityChange = () => {
+      checkConnectivity();
+    };
+
+    window.addEventListener('online', handleConnectivityChange);
+    window.addEventListener('offline', handleConnectivityChange);
+
+    // Dynamic polling interval (every 12 seconds)
+    const interval = setInterval(() => {
+      checkConnectivity();
+    }, 12000);
+
+    // Initial check
+    checkConnectivity();
+
+    return () => {
+      window.removeEventListener('online', handleConnectivityChange);
+      window.removeEventListener('offline', handleConnectivityChange);
+      clearInterval(interval);
+    };
+  }, [checkConnectivity]);
 
   // Initiate real-time telemetry simulations (adds random instore transactions periodically)
   useEffect(() => {
@@ -69,6 +121,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-gray-800" id="main-app-frame">
+      <NotificationToast />
       <style>{`
         :root {
           ${activeTheme === 'emerald' ? `
@@ -153,6 +206,58 @@ export default function App() {
           {/* RIGHT: LIVE PROFILE, INTERACTIVE ROLE SELECTOR */}
           <div className="flex items-center gap-4">
             
+            {/* Dynamic Connectivity Hub Pill */}
+            <div className={`p-1 pl-1.5 pr-2.5 rounded-full border text-[10px] sm:text-xs font-bold flex items-center gap-1.5 transition-all duration-300 ${
+              connectionState === 'online' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
+              connectionState === 'syncing' ? 'bg-orange-50 text-orange-850 border-orange-200 animate-pulse' :
+              connectionState === 'slow' ? 'bg-amber-50 text-amber-800 border-amber-200' :
+              'bg-red-50 text-red-800 border-red-200'
+            }`} title="Dynamic Cloud Sync Status">
+              {connectionState === 'online' && (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="hidden sm:inline">Live Connected</span>
+                  <span className="sm:hidden">Live</span>
+                </>
+              )}
+              {connectionState === 'syncing' && (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-orange-500 animate-ping shrink-0" />
+                  <span>Syncing...</span>
+                </>
+              )}
+              {connectionState === 'slow' && (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                  <span>Slow Link (Local Mode)</span>
+                </>
+              )}
+              {connectionState === 'offline' && (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-red-500 shrink-0 animate-pulse" />
+                  <span className="hidden sm:inline">Offline Mode (Local)</span>
+                  <span className="sm:hidden">Offline</span>
+                </>
+              )}
+            </div>
+
+            {/* Sync Now button when offline or has pending updates */}
+            {connectionState && (
+              <button
+                onClick={async () => {
+                  useStore.setState({ connectionState: 'syncing' });
+                  await syncLocalToCloud();
+                  await checkConnectivity();
+                }}
+                disabled={connectionState === 'syncing'}
+                className="p-1.5 border border-gray-200 hover:bg-orange-50 text-gray-500 hover:text-orange-700 rounded-xl transition cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                title="Force Database Synchronization Now"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${connectionState === 'syncing' ? 'animate-spin' : ''}`} />
+                <span className="hidden lg:inline text-[9px] font-bold uppercase tracking-tight">Sync</span>
+              </button>
+            )}
+            
             {/* Interactive Role Switcher Pill */}
             {currentUser?.email === 'ac.repair.in.dubai3@gmail.com' && (
               <div className="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-xs">
@@ -219,14 +324,41 @@ export default function App() {
         </div>
       )}
 
+      {/* Global Error Banner */}
+      {errorMessage && (
+        <div className="bg-red-50 border-b border-red-200 py-3 px-4 flex items-center justify-between text-xs text-red-905 font-sans print:hidden animate-fade-in" id="global-error-banner">
+          <div className="flex items-center gap-2 font-semibold">
+            <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <span>⚠️ {errorMessage}</span>
+          </div>
+          <button 
+            onClick={() => useStore.setState({ errorMessage: null })}
+            className="text-red-500 hover:text-red-800 font-black cursor-pointer px-2"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* THREE-COLUMN LAYOUT AND WRAPPERS */}
       <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 flex flex-col md:flex-row gap-6 flex-1">
         
-        {/* LEFT COLUMN: DESKTOP NAVIGATION (1/4 Width) */}
-        <aside className="w-full md:w-64 bg-white border border-gray-150 p-4 rounded-2xl h-fit space-y-4 shadow-3xs shrink-0 print:hidden" id="sidebar-container">
-          <div className="px-2.5 pb-2 border-b border-gray-100 flex items-center gap-1.5 select-none">
-            <Sparkles className="h-4.5 w-4.5 text-orange-600 animate-pulse" />
-            <span className="text-[10px] font-extrabold text-gray-500 uppercase tracking-wider">Flour Workspace Nav</span>
+        {/* LEFT COLUMN: DESKTOP NAVIGATION */}
+        <aside className={`bg-white border border-gray-150 p-4 rounded-2xl h-fit space-y-4 shadow-3xs shrink-0 print:hidden transition-all duration-300 ${isSidebarCollapsed ? 'w-full md:w-[5.5rem]' : 'w-full md:w-64'}`} id="sidebar-container">
+          <div className={`flex items-center select-none ${isSidebarCollapsed ? 'justify-center pb-2 border-b border-gray-100' : 'px-1 md:px-2.5 pb-2 border-b border-gray-100 justify-between gap-2'}`}>
+            {!isSidebarCollapsed && (
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-4.5 w-4.5 text-orange-600 animate-pulse shrink-0" />
+                <span className="text-[10px] font-extrabold text-gray-500 uppercase tracking-wider truncate">Flour Nav</span>
+              </div>
+            )}
+            <button 
+              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
+              className="text-gray-400 hover:text-orange-600 hover:bg-gray-50 flex items-center justify-center p-1 rounded-md transition-all shrink-0 cursor-pointer"
+              title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen className="h-4.5 w-4.5" /> : <PanelLeftClose className="h-4.5 w-4.5" />}
+            </button>
           </div>
 
           <nav className="space-y-1.5 flex flex-col">
@@ -235,16 +367,22 @@ export default function App() {
               return (
                 <button
                   key={link.id}
-                  onClick={() => setActiveTab(link.id as any)}
-                  className={`w-full flex items-center justify-between py-2 px-3 rounded-xl transition-all cursor-pointer font-semibold text-xs text-left ${active ? 'bg-orange-50/50 text-orange-700 font-extrabold' : 'text-gray-650 hover:text-gray-900 hover:bg-gray-50/60'}`}
+                  onClick={() => {
+                    setActiveTab(link.id as any);
+                    if (window.innerWidth < 1024) {
+                      setIsSidebarCollapsed(true);
+                    }
+                  }}
+                  title={isSidebarCollapsed ? link.name : undefined}
+                  className={`w-full flex items-center transition-all cursor-pointer font-semibold text-xs text-left ${active ? 'bg-orange-50/50 text-orange-700 font-extrabold' : 'text-gray-650 hover:text-gray-900 hover:bg-gray-50/60'} ${isSidebarCollapsed ? 'justify-center p-2.5 rounded-xl' : 'justify-between py-2 px-3 rounded-xl'}`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <span className={active ? 'text-orange-600' : 'text-gray-400'}>
+                  <div className={`flex items-center gap-2.5 ${isSidebarCollapsed ? 'justify-center mx-auto' : ''}`}>
+                    <span className={`${active ? 'text-orange-600' : 'text-gray-400'} shrink-0`}>
                       {link.icon}
                     </span>
-                    <span>{link.name}</span>
+                    {!isSidebarCollapsed && <span className="truncate">{link.name}</span>}
                   </div>
-                  {active && <ChevronRight className="h-3.5 w-3.5 text-orange-500" />}
+                  {!isSidebarCollapsed && active && <ChevronRight className="h-3.5 w-3.5 text-orange-500 shrink-0" />}
                 </button>
               );
             })}

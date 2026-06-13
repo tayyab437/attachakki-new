@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
   ShoppingCart, Plus, Minus, Trash2, Search, User, CreditCard, 
-  Tag, Loader2, Sparkles, Printer, CheckCircle, FileText, X 
+  Tag, Loader2, Sparkles, Printer, CheckCircle, FileText, X,
+  ChevronDown, ChevronUp, SlidersHorizontal, LayoutList
 } from 'lucide-react';
 
 export default function SalesPOSView() {
@@ -11,9 +12,18 @@ export default function SalesPOSView() {
   // Search products
   const [productSearch, setProductSearch] = useState('');
   
-  // Cart state
-  const [cart, setCart] = useState<{ product_id: string; quantity: number }[]>([]);
+  // Cart state (with price override capability)
+  const [cart, setCart] = useState<{ product_id: string; quantity: number; custom_unit_price?: number }[]>([]);
   
+  // Choose between beautiful compact row listing and full-panel layout
+  const [isCompactMode, setIsCompactMode] = useState(() => {
+    const saved = localStorage.getItem('pos_cart_compact_mode');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  // Keep track of which card is currently expanded to edit price/quantity in compact mode
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   // Checkout details
   const [customerId, setCustomerId] = useState<string>(''); // empty means Walk-in
   const [walkInName, setWalkInName] = useState<string>('');
@@ -27,6 +37,9 @@ export default function SalesPOSView() {
 
   // Buffer raw text for buy-by-amount typing to avoid annoying decimal cursor drift
   const [amountInputs, setAmountInputs] = useState<Record<string, string>>({});
+
+  // Buffer raw text for price-override typing to avoid annoying decimal cursor drift
+  const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
 
   const primaryCurrency = currentShop?.currency || 'PKR';
   const taxRate = currentShop?.tax_rate ?? 0;
@@ -55,6 +68,9 @@ export default function SalesPOSView() {
       return [...prev, { product_id: productId, quantity: 1 }];
     });
 
+    // Auto-focus the last updated product for quick custom edits
+    setExpandedId(productId);
+
     // Wipe manual amount buffer when product count increments
     setAmountInputs(prev => {
       const next = { ...prev };
@@ -63,11 +79,18 @@ export default function SalesPOSView() {
     });
   };
 
+  const formatQuantity = (qty: number) => {
+    return Number(qty).toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 4
+    });
+  };
+
   const updateCartQuantity = (productId: string, val: number) => {
     setCart(prev => {
       return prev.map(item => {
         if (item.product_id === productId) {
-          const finalQty = Math.max(0.01, parseFloat((item.quantity + val).toFixed(2)));
+          const finalQty = Math.max(0.0001, parseFloat((item.quantity + val).toFixed(4)));
           return { ...item, quantity: finalQty };
         }
         return item;
@@ -82,6 +105,17 @@ export default function SalesPOSView() {
     });
   };
 
+  const updateCartPrice = (productId: string, priceVal: number) => {
+    setCart(prev => {
+      return prev.map(item => {
+        if (item.product_id === productId) {
+          return { ...item, custom_unit_price: priceVal >= 0 ? priceVal : undefined };
+        }
+        return item;
+      });
+    });
+  };
+
   const removeFromCart = (productId: string) => {
     setCart(prev => prev.filter(i => i.product_id !== productId));
     setAmountInputs(prev => {
@@ -89,6 +123,14 @@ export default function SalesPOSView() {
       delete next[productId];
       return next;
     });
+    setPriceInputs(prev => {
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
+    if (expandedId === productId) {
+      setExpandedId(null);
+    }
   };
 
   // Computations
@@ -97,7 +139,8 @@ export default function SalesPOSView() {
     cart.forEach(item => {
       const prod = products.find(p => p.id === item.product_id);
       if (prod) {
-        subtotal += item.quantity * prod.sale_price;
+        const activePrice = item.custom_unit_price ?? prod.sale_price;
+        subtotal += Math.round(item.quantity * activePrice * 100) / 100;
       }
     });
 
@@ -121,7 +164,7 @@ export default function SalesPOSView() {
       return {
         product_id: item.product_id,
         quantity: item.quantity,
-        sale_price: prod.sale_price
+        sale_price: item.custom_unit_price ?? prod.sale_price
       };
     });
 
@@ -141,10 +184,12 @@ export default function SalesPOSView() {
       // Reset POS Cart
       setCart([]);
       setAmountInputs({});
+      setPriceInputs({});
       setCustomerId('');
       setWalkInName('');
       setDiscount(0);
       setPaidAmount(0);
+      setExpandedId(null);
     }
   };
 
@@ -207,7 +252,7 @@ export default function SalesPOSView() {
 
                 <div className="flex items-center justify-between pt-1">
                   <span className="font-bold font-mono text-gray-900 text-sm">
-                    {primaryCurrency} {prod.sale_price.toLocaleString()} <span className="text-[10px] text-gray-500 font-normal">/ {prod.unit}</span>
+                    {primaryCurrency} {(prod.sale_price || 0).toLocaleString()} <span className="text-[10px] text-gray-500 font-normal">/ {prod.unit}</span>
                   </span>
 
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${prod.stock <= prod.min_stock_alert ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-gray-100 text-gray-700'}`}>
@@ -281,11 +326,11 @@ export default function SalesPOSView() {
                       <div className="truncate max-w-[60%]">
                         <span className="font-bold text-gray-900 block truncate">{line.product_name}</span>
                         <span className="text-[10px] text-gray-400 font-mono">
-                          {Number(line.quantity).toFixed(2)} {line.unit} × {primaryCurrency} {line.unit_price}
+                          {formatQuantity(line.quantity)} {line.unit} × {primaryCurrency} {line.unit_price}
                         </span>
                       </div>
                       <span className="font-bold font-mono text-gray-950 self-center">
-                        {primaryCurrency} {line.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {primaryCurrency} {(line.total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                   ))}
@@ -295,30 +340,30 @@ export default function SalesPOSView() {
                 <div className="space-y-1.5 pt-2 border-t border-dashed border-gray-200 text-right">
                   <div className="flex justify-between text-[11px] text-gray-500">
                     <span>Cart Subtotal:</span>
-                    <span className="font-mono">{primaryCurrency} {completedInvoiceDetails.sale.total_amount.toLocaleString()}</span>
+                    <span className="font-mono">{primaryCurrency} {(completedInvoiceDetails.sale.total_amount || 0).toLocaleString()}</span>
                   </div>
-                  {completedInvoiceDetails.sale.discount > 0 && (
+                  {(completedInvoiceDetails.sale.discount || 0) > 0 && (
                     <div className="flex justify-between text-[11px] text-red-650">
                       <span>Discount:</span>
-                      <span className="font-mono">-{primaryCurrency} {completedInvoiceDetails.sale.discount.toLocaleString()}</span>
+                      <span className="font-mono">-{primaryCurrency} {(completedInvoiceDetails.sale.discount || 0).toLocaleString()}</span>
                     </div>
                   )}
                   <div className="flex justify-between text-[11px] text-gray-500">
                     <span>Tax ({taxRate}%):</span>
-                    <span className="font-mono">{primaryCurrency} {completedInvoiceDetails.sale.tax_amount.toLocaleString()}</span>
+                    <span className="font-mono">{primaryCurrency} {(completedInvoiceDetails.sale.tax_amount || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between text-gray-950 font-extrabold border-t border-gray-150 pt-1.5">
                     <span>GRAND TOTAL:</span>
-                    <span className="font-mono text-orange-600 text-sm">{primaryCurrency} {completedInvoiceDetails.sale.net_amount.toLocaleString()}</span>
+                    <span className="font-mono text-orange-600 text-sm">{primaryCurrency} {(completedInvoiceDetails.sale.net_amount || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between text-[11px] text-gray-650">
                     <span>Amount Deposited:</span>
-                    <span className="font-mono font-bold text-gray-900">{primaryCurrency} {completedInvoiceDetails.sale.paid_amount.toLocaleString()}</span>
+                    <span className="font-mono font-bold text-gray-900">{primaryCurrency} {(completedInvoiceDetails.sale.paid_amount || 0).toLocaleString()}</span>
                   </div>
-                  {completedInvoiceDetails.sale.net_amount - completedInvoiceDetails.sale.paid_amount > 0 && (
+                  {(completedInvoiceDetails.sale.net_amount || 0) - (completedInvoiceDetails.sale.paid_amount || 0) > 0 && (
                     <div className="flex justify-between text-[10px] text-orange-700 font-bold border-t border-dashed border-gray-150 pt-1 animate-pulse">
                       <span>LEDGER CREDIT BALANCE:</span>
-                      <span className="font-mono">{primaryCurrency} {(completedInvoiceDetails.sale.net_amount - completedInvoiceDetails.sale.paid_amount).toLocaleString()}</span>
+                      <span className="font-mono">{primaryCurrency} {((completedInvoiceDetails.sale.net_amount || 0) - (completedInvoiceDetails.sale.paid_amount || 0)).toLocaleString()}</span>
                     </div>
                   )}
                 </div>
@@ -349,12 +394,42 @@ export default function SalesPOSView() {
         ) : (
           <>
             <div className="space-y-4">
-              <h3 className="text-xs font-bold text-gray-900 uppercase tracking-widest flex items-center gap-1.5 border-b border-gray-100 pb-2">
-                <ShoppingCart className="h-4 w-4 text-orange-600" />
-                <span>Active Sales Cart</span>
+              <h3 className="text-xs font-bold text-gray-900 uppercase tracking-widest flex items-center justify-between border-b border-gray-100 pb-2">
+                <div className="flex items-center gap-1.5">
+                  <ShoppingCart className="h-4 w-4 text-orange-600" />
+                  <span>Active Sales Cart</span>
+                </div>
+                
+                {/* Mode toggle switcher */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !isCompactMode;
+                    setIsCompactMode(next);
+                    localStorage.setItem('pos_cart_compact_mode', String(next));
+                  }}
+                  className={`px-2 py-1 py-1 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-tight border flex items-center gap-1 transition-all duration-200 cursor-pointer ${
+                    isCompactMode 
+                      ? 'bg-orange-50 border-orange-200 text-orange-800 hover:bg-orange-100' 
+                      : 'bg-gray-100 border-gray-250 text-gray-700 hover:bg-gray-200'
+                  }`}
+                  title="Toggle Cart Layout Style (Compact Summary vs Expanded Details)"
+                >
+                  {isCompactMode ? (
+                    <>
+                      <LayoutList className="h-3 w-3 text-orange-600 shrink-0" />
+                      <span>Compact rows</span>
+                    </>
+                  ) : (
+                    <>
+                      <SlidersHorizontal className="h-3 w-3 text-gray-500 shrink-0" />
+                      <span>Detailed cards</span>
+                    </>
+                  )}
+                </button>
               </h3>
                {/* Cart Table */}
-              <div className="space-y-3.5 max-h-[260px] overflow-y-auto pr-1">
+              <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
                 {cart.length === 0 ? (
                   <div className="py-8 text-center text-xs text-gray-400">
                     Cart is currently empty. Click options on the left.
@@ -363,16 +438,216 @@ export default function SalesPOSView() {
                   cart.map(item => {
                     const prod = products.find(p => p.id === item.product_id);
                     if (!prod) return null;
-                    const total = item.quantity * prod.sale_price;
+                    const activePrice = item.custom_unit_price ?? prod.sale_price;
+                    const total = Math.round(item.quantity * activePrice * 100) / 100;
 
+                    // If compact mode is enabled, display accordions
+                    if (isCompactMode) {
+                      const isExpanded = expandedId === item.product_id;
+
+                      if (!isExpanded) {
+                        return (
+                          <div 
+                            key={item.product_id} 
+                            onClick={() => setExpandedId(item.product_id)}
+                            className="p-2.5 bg-gray-50 hover:bg-gray-100/80 hover:border-gray-350 border border-gray-150 rounded-xl flex items-center justify-between gap-3 text-xs text-left cursor-pointer transition duration-150 select-none animate-fade-in"
+                          >
+                            <div className="truncate flex-1">
+                              <span className="font-bold text-gray-950 block truncate leading-tight mb-0.5">{prod.name}</span>
+                              <span className="text-[10px] text-gray-550 flex items-center gap-1 flex-wrap">
+                                <span className="font-mono font-extrabold bg-gray-100 text-gray-700 px-1 py-0.5 rounded-sm">{formatQuantity(item.quantity)} {prod.unit}</span>
+                                <span className="text-gray-400">×</span>
+                                <span className="font-mono text-gray-500">{primaryCurrency} {activePrice}</span>
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-extrabold font-mono text-gray-900 text-xs">
+                                {primaryCurrency} {(total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                              <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // Expanded compact card inline
+                      return (
+                        <div 
+                          key={item.product_id} 
+                          className="p-3 bg-orange-50/15 border-2 border-orange-200 rounded-xl flex flex-col gap-2.5 text-xs text-left transition-all duration-200 shadow-2xs"
+                        >
+                          {/* Expanded Title Header */}
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="truncate flex-1" onClick={() => setExpandedId(null)}>
+                              <span className="block font-bold text-gray-950 truncate cursor-pointer leading-tight">{prod.name}</span>
+                              <span className="block text-[8.5px] text-orange-650 font-black tracking-widest uppercase mt-0.5">
+                                Edit Quantity & Miller Rate
+                              </span>
+                            </div>
+                            
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedId(null)}
+                                className="p-1 hover:bg-gray-100 text-gray-500 hover:text-gray-900 rounded-lg transition"
+                                title="Collapse options"
+                              >
+                                <ChevronUp className="h-4 w-4" />
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={() => removeFromCart(item.product_id)}
+                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition"
+                                title="Remove item"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Expansion Panel inputs */}
+                          <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-gray-150">
+                            {/* Buy Qty */}
+                            <div>
+                              <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">Buy Qty ({prod.unit})</span>
+                              <div className="flex items-center border border-gray-200 rounded-lg bg-white overflow-hidden shadow-2xs h-8">
+                                <button 
+                                  type="button"
+                                  onClick={() => updateCartQuantity(item.product_id, -1)}
+                                  className="px-1.5 hover:bg-gray-100 text-gray-500 transition cursor-pointer shrink-0 h-full flex items-center justify-center border-r border-gray-100"
+                                >
+                                  <Minus className="h-2 w-2" />
+                                </button>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={item.quantity === 0 ? '' : item.quantity}
+                                  onChange={(e) => {
+                                    const rawVal = parseFloat(e.target.value);
+                                    setCart(prev => prev.map(c => 
+                                      c.product_id === item.product_id ? { ...c, quantity: isNaN(rawVal) ? 0 : parseFloat(rawVal.toFixed(4)) } : c
+                                    ));
+                                    setAmountInputs(prev => {
+                                      const next = { ...prev };
+                                      delete next[item.product_id];
+                                      return next;
+                                    });
+                                  }}
+                                  className="w-full text-center border-0 p-0 text-[11px] font-black font-mono text-gray-850 bg-transparent focus:ring-0 focus:outline-none min-w-[20px]"
+                                />
+                                <button 
+                                  type="button"
+                                  onClick={() => updateCartQuantity(item.product_id, 1)}
+                                  className="px-1.5 hover:bg-gray-100 text-gray-500 transition cursor-pointer shrink-0 h-full flex items-center justify-center border-l border-gray-100"
+                                >
+                                  <Plus className="h-2 w-2" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Buy Price override */}
+                            <div>
+                              <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">Price / {prod.unit}</span>
+                              <input
+                                type="number"
+                                step="any"
+                                min="0"
+                                value={
+                                  priceInputs[item.product_id] !== undefined
+                                    ? priceInputs[item.product_id]
+                                    : item.custom_unit_price !== undefined
+                                    ? item.custom_unit_price
+                                    : prod.sale_price
+                                }
+                                onChange={(e) => {
+                                  const valStr = e.target.value;
+                                  setPriceInputs(prev => ({
+                                    ...prev,
+                                    [item.product_id]: valStr
+                                  }));
+
+                                  const val = parseFloat(valStr);
+                                  updateCartPrice(item.product_id, isNaN(val) ? -1 : val);
+                                }}
+                                onBlur={() => {
+                                  setPriceInputs(prev => {
+                                    const next = { ...prev };
+                                    delete next[item.product_id];
+                                    return next;
+                                  });
+                                }}
+                                placeholder={String(prod.sale_price)}
+                                className="w-full h-8 px-1.5 bg-white border border-gray-200 rounded-lg text-[11px] font-bold font-mono text-gray-850 transition focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
+                              />
+                            </div>
+
+                            {/* Scale dynamically by amount */}
+                            <div>
+                              <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">By Amount ({primaryCurrency})</span>
+                              <input
+                                type="number"
+                                step="any"
+                                placeholder={`e.g. 1000`}
+                                value={
+                                  amountInputs[item.product_id] !== undefined
+                                    ? amountInputs[item.product_id]
+                                    : item.quantity === 0
+                                    ? ''
+                                    : Math.round(item.quantity * activePrice * 100) / 100
+                                }
+                                onChange={(e) => {
+                                  const valStr = e.target.value;
+                                  setAmountInputs(prev => ({
+                                    ...prev,
+                                    [item.product_id]: valStr
+                                  }));
+
+                                  const amt = parseFloat(valStr);
+                                  if (!isNaN(amt)) {
+                                    const qty = parseFloat((amt / activePrice).toFixed(6));
+                                    setCart(prev => prev.map(c => 
+                                      c.product_id === item.product_id ? { ...c, quantity: qty } : c
+                                    ));
+                                  } else {
+                                    setCart(prev => prev.map(c => 
+                                      c.product_id === item.product_id ? { ...c, quantity: 0 } : c
+                                    ));
+                                  }
+                                }}
+                                onBlur={() => {
+                                  setAmountInputs(prev => {
+                                    const next = { ...prev };
+                                    delete next[item.product_id];
+                                    return next;
+                                  });
+                                }}
+                                className="w-full h-8 px-1.5 bg-white border border-gray-200 rounded-lg text-[11px] font-bold font-mono text-gray-800 focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Inline Subtotal statement */}
+                          <div className="flex justify-between items-center bg-white/80 p-1.5 px-2.5 rounded-lg text-gray-650 border border-orange-100">
+                            <span className="font-bold text-[9px] uppercase tracking-wide text-gray-450">Item subtotal:</span>
+                            <span className="font-extrabold text-orange-600 font-mono text-xs">
+                              {primaryCurrency} {(total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Standard (Detailed cards) Mode
                     return (
                       <div key={item.product_id} className="p-3 bg-gray-50 border border-gray-150 rounded-2xl flex flex-col gap-2 text-xs text-left">
                         {/* Title & Remove btn */}
                         <div className="flex items-center justify-between gap-1">
                           <div className="truncate max-w-[80%]">
                             <span className="block font-bold text-gray-900 truncate">{prod.name}</span>
-                            <span className="block text-[10px] text-gray-400 font-mono">
-                              Unit Price: {primaryCurrency} {prod.sale_price} / {prod.unit}
+                            <span className="block text-[10px] text-gray-440 font-mono mt-0.5">
+                              Standard Rate: {primaryCurrency} {prod.sale_price} / {prod.unit}
                             </span>
                           </div>
                           <button 
@@ -386,27 +661,27 @@ export default function SalesPOSView() {
                         </div>
 
                         {/* Interactive adjustment controls */}
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100">
+                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100">
                           {/* 1. Buy Quantity */}
                           <div>
-                            <label className="block text-[8.5px] font-bold text-gray-450 uppercase mb-0.5 tracking-wider">Buy Quantity ({prod.unit})</label>
-                            <div className="flex items-center border border-gray-200 rounded-lg bg-white overflow-hidden shadow-2xs">
+                            <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">Buy Quantity ({prod.unit})</span>
+                            <div className="flex items-center border border-gray-200 rounded-lg bg-white overflow-hidden shadow-2xs h-8">
                               <button 
                                 type="button"
                                 onClick={() => updateCartQuantity(item.product_id, -1)}
-                                className="p-1 px-1.5 hover:bg-gray-100 text-gray-600 transition cursor-pointer shrink-0"
+                                className="p-1 px-1.5 hover:bg-gray-100 text-gray-500 transition cursor-pointer shrink-0"
                               >
                                 <Minus className="h-2.5 w-2.5" />
                               </button>
                               <input
                                 type="number"
-                                step="0.01"
-                                min="0.01"
+                                step="any"
+                                min="0"
                                 value={item.quantity === 0 ? '' : item.quantity}
                                 onChange={(e) => {
                                   const rawVal = parseFloat(e.target.value);
                                   setCart(prev => prev.map(c => 
-                                    c.product_id === item.product_id ? { ...c, quantity: isNaN(rawVal) ? 0 : parseFloat(rawVal.toFixed(2)) } : c
+                                    c.product_id === item.product_id ? { ...c, quantity: isNaN(rawVal) ? 0 : parseFloat(rawVal.toFixed(4)) } : c
                                   ));
                                   // Invalidate cache
                                   setAmountInputs(prev => {
@@ -415,7 +690,7 @@ export default function SalesPOSView() {
                                     return next;
                                   });
                                 }}
-                                className="w-full text-center border-0 p-0.5 text-xs font-bold font-mono text-gray-800 bg-transparent focus:ring-0 focus:outline-none min-w-[30px]"
+                                className="w-full text-center border-0 p-0 text-[11px] font-bold font-mono text-gray-800 bg-transparent focus:ring-0 focus:outline-none min-w-[20px]"
                               />
                               <button 
                                 type="button"
@@ -426,9 +701,46 @@ export default function SalesPOSView() {
                               </button>
                             </div>
                           </div>
-                           {/* 2. Buy by cash amount */}
+
+                          {/* Unit Price Override */}
                           <div>
-                            <label className="block text-[8.5px] font-bold text-gray-450 uppercase mb-0.5 tracking-wider">Buy by Amount ({primaryCurrency})</label>
+                            <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">Price Override / {prod.unit}</span>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={
+                                priceInputs[item.product_id] !== undefined
+                                  ? priceInputs[item.product_id]
+                                  : item.custom_unit_price !== undefined
+                                  ? item.custom_unit_price
+                                  : prod.sale_price
+                              }
+                              onChange={(e) => {
+                                const valStr = e.target.value;
+                                setPriceInputs(prev => ({
+                                  ...prev,
+                                  [item.product_id]: valStr
+                                }));
+
+                                const val = parseFloat(valStr);
+                                updateCartPrice(item.product_id, isNaN(val) ? -1 : val);
+                              }}
+                              onBlur={() => {
+                                setPriceInputs(prev => {
+                                  const next = { ...prev };
+                                  delete next[item.product_id];
+                                  return next;
+                                });
+                              }}
+                              placeholder={String(prod.sale_price)}
+                              className="w-full h-8 px-1.5 bg-white border border-gray-200 rounded-lg text-[11px] font-bold font-mono text-gray-850 focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
+                            />
+                          </div>
+
+                          {/* 2. Buy by cash amount */}
+                          <div>
+                            <span className="block text-[8px] font-black text-gray-450 uppercase mb-0.5 tracking-wider">Buy by Amount ({primaryCurrency})</span>
                             <input
                               type="number"
                               step="any"
@@ -438,7 +750,7 @@ export default function SalesPOSView() {
                                   ? amountInputs[item.product_id]
                                   : item.quantity === 0
                                   ? ''
-                                  : parseFloat((item.quantity * prod.sale_price).toFixed(2))
+                                  : Math.round(item.quantity * activePrice * 100) / 100
                               }
                               onChange={(e) => {
                                 const valStr = e.target.value;
@@ -449,8 +761,7 @@ export default function SalesPOSView() {
 
                                 const amt = parseFloat(valStr);
                                 if (!isNaN(amt)) {
-                                  // Compute quantity based on cash split, rounded to exactly 2 decimal places
-                                  const qty = parseFloat((amt / prod.sale_price).toFixed(2));
+                                  const qty = parseFloat((amt / activePrice).toFixed(6));
                                   setCart(prev => prev.map(c => 
                                     c.product_id === item.product_id ? { ...c, quantity: qty } : c
                                   ));
@@ -468,16 +779,16 @@ export default function SalesPOSView() {
                                   return next;
                                 });
                               }}
-                              className="w-full p-1 bg-white border border-gray-200 rounded-lg text-xs font-bold font-mono text-gray-800 focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
+                              className="w-full h-8 p-1 bg-white border border-gray-200 rounded-lg text-[11px] font-bold font-mono text-gray-800 focus:outline-none focus:ring-1 focus:ring-orange-500 shadow-2xs"
                             />
                           </div>
                         </div>
 
                         {/* Calculated Subtotal banner */}
-                        <div className="flex justify-between items-center bg-gray-100/50 p-1 px-2 rounded-lg text-gray-600 font-medium">
+                        <div className="flex justify-between items-center bg-gray-100/50 p-1 px-2 rounded-lg text-gray-650 font-medium">
                           <span>Subtotal:</span>
                           <span className="font-bold text-gray-950 font-mono">
-                            {primaryCurrency} {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {primaryCurrency} {(total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
                       </div>
@@ -586,21 +897,21 @@ export default function SalesPOSView() {
               <div className="text-xs space-y-1.5">
                 <div className="flex items-center justify-between text-gray-500 font-medium">
                   <span>Cart Subtotal</span>
-                  <span className="font-mono">{primaryCurrency} {cartTotals.subtotal.toLocaleString()}</span>
+                  <span className="font-mono">{primaryCurrency} {(cartTotals.subtotal || 0).toLocaleString()}</span>
                 </div>
                 {discount > 0 && (
                   <div className="flex items-center justify-between text-red-600 font-medium">
                     <span>Instore Discount</span>
-                    <span className="font-mono">-{primaryCurrency} {discount.toLocaleString()}</span>
+                    <span className="font-mono">-{primaryCurrency} {(discount || 0).toLocaleString()}</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between text-gray-500 font-medium">
                   <span>Milling Tax ({taxRate}%)</span>
-                  <span className="font-mono">{primaryCurrency} {cartTotals.tax.toLocaleString()}</span>
+                  <span className="font-mono">{primaryCurrency} {(cartTotals.tax || 0).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center justify-between text-gray-900 font-bold text-sm border-t border-dashed border-gray-200 pt-1.5">
                   <span>GRAND TOTAL</span>
-                  <span className="font-mono text-base text-orange-600">{primaryCurrency} {cartTotals.grandTotal.toLocaleString()}</span>
+                  <span className="font-mono text-base text-orange-600">{primaryCurrency} {(cartTotals.grandTotal || 0).toLocaleString()}</span>
                 </div>
               </div>
 
@@ -609,7 +920,7 @@ export default function SalesPOSView() {
                 disabled={cart.length === 0}
                 className={`w-full py-3 rounded-xl text-xs font-bold font-sans text-white text-center transition-all cursor-pointer ${cart.length === 0 ? 'bg-gray-200 cursor-not-allowed text-gray-400 shadow-none' : 'bg-gray-950 hover:bg-gray-900 shadow-sm active:scale-98'}`}
               >
-                Process Secure Checkout ({primaryCurrency} {cartTotals.grandTotal.toLocaleString()})
+                Process Secure Checkout ({primaryCurrency} {(cartTotals.grandTotal || 0).toLocaleString()})
               </button>
             </div>
           </>

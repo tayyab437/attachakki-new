@@ -63,27 +63,27 @@ export default function ReportsView() {
         
         <div className="bg-white p-4 rounded-xl border border-gray-150 p-4 shadow-3xs">
           <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest">Today's Revenue</span>
-          <span className="block text-lg font-bold text-gray-900 font-mono mt-0.5">{primaryCurrency} {reportsData.todayRevenue.toLocaleString()}</span>
+          <span className="block text-lg font-bold text-gray-900 font-mono mt-0.5">{primaryCurrency} {(reportsData.todayRevenue || 0).toLocaleString()}</span>
           <span className="block text-[9px] text-gray-500 font-medium">{reportsData.todayCount} checkout transactions</span>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-gray-150 p-4 shadow-3xs">
           <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest">Calculated P&L Flow</span>
           <span className={`block text-lg font-bold font-mono mt-0.5 ${reportsData.netMonthlyProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-            {primaryCurrency} {reportsData.netMonthlyProfit.toLocaleString()}
+            {primaryCurrency} {(reportsData.netMonthlyProfit || 0).toLocaleString()}
           </span>
           <span className="block text-[9px] text-gray-500 font-medium">True profit net value</span>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-gray-150 p-4 shadow-3xs">
           <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest">Outstanding Credit</span>
-          <span className="block text-lg font-bold text-gray-950 font-mono mt-0.5 text-orange-700">{primaryCurrency} {reportsData.totalOutstandingCredit.toLocaleString()}</span>
+          <span className="block text-lg font-bold text-gray-950 font-mono mt-0.5 text-orange-700">{primaryCurrency} {(reportsData.totalOutstandingCredit || 0).toLocaleString()}</span>
           <span className="block text-[9px] text-gray-400 font-medium">Pending cash collection</span>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-gray-150 p-4 shadow-3xs">
           <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest">Grains Asset Worth</span>
-          <span className="block text-lg font-bold text-gray-900 font-mono mt-0.5">{primaryCurrency} {reportsData.totalInventoryCostValue.toLocaleString()}</span>
+          <span className="block text-lg font-bold text-gray-900 font-mono mt-0.5">{primaryCurrency} {(reportsData.totalInventoryCostValue || 0).toLocaleString()}</span>
           <span className="block text-[9px] text-gray-400 font-medium">At baseline cost worth</span>
         </div>
 
@@ -150,32 +150,56 @@ export default function ReportsView() {
                     <th className="py-2">Buyer Name</th>
                     <th className="py-2">Gateway</th>
                     <th className="py-2 text-right">Net Cart</th>
+                    <th className="py-2 text-right">Net Profit</th>
                     <th className="py-2 text-right">Amount Paid</th>
                     <th className="py-2 text-right">Debited Outstanding</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-gray-700 font-medium">
-                  {sales.map((s, index) => (
-                    <tr key={s.id}>
-                      <td className="py-2 font-bold font-mono text-gray-900 text-xs">SYS-REC-{index + 1001}</td>
-                      <td className="py-2">
-                        {customers.find(c => c.id === s.customer_id)?.name || s.customer_name_manual || 'Walk-in buyer'}
-                      </td>
-                      <td className="py-2 uppercase font-semibold text-gray-550">{s.payment_method}</td>
-                      <td className="py-2 text-right font-mono font-bold text-gray-905">{primaryCurrency} {s.net_amount.toLocaleString()}</td>
-                      <td className="py-2 text-right font-mono text-emerald-700 font-bold">{primaryCurrency} {s.paid_amount.toLocaleString()}</td>
-                      <td className="py-2 text-right font-mono text-orange-700 font-bold">
-                        {primaryCurrency} {(s.net_amount - s.paid_amount).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
+                  {sales.map((s, index) => {
+                    const costOfSale = saleItems
+                      .filter(item => item.sale_id === s.id)
+                      .reduce((sum, item) => sum + (item.quantity * item.cost_price_at_sale), 0);
+                    const profitPerSale = (s.net_amount || 0) - costOfSale;
+
+                    return (
+                      <tr key={s.id}>
+                        <td className="py-2 font-bold font-mono text-gray-900 text-xs">SYS-REC-{index + 1001}</td>
+                        <td className="py-2">
+                          {customers.find(c => c.id === s.customer_id)?.name || s.customer_name_manual || 'Walk-in buyer'}
+                        </td>
+                        <td className="py-2 uppercase font-semibold text-gray-550">{s.payment_method}</td>
+                        <td className="py-2 text-right font-mono font-bold text-gray-905">{primaryCurrency} {(s.net_amount || 0).toLocaleString()}</td>
+                        <td className={`py-2 text-right font-mono font-bold ${profitPerSale >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {primaryCurrency} {profitPerSale.toLocaleString()}
+                        </td>
+                        <td className="py-2 text-right font-mono text-emerald-700 font-bold">{primaryCurrency} {(s.paid_amount || 0).toLocaleString()}</td>
+                        <td className="py-2 text-right font-mono text-orange-700 font-bold">
+                          {primaryCurrency} {((s.net_amount || 0) - (s.paid_amount || 0)).toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
             
-            <div className="flex justify-between items-center pt-2 pt-2 border-t border-gray-100 text-xs bg-gray-50/50 p-3 rounded-xl font-bold">
-              <span>Grand Consolidated Sales Value:</span>
-              <span className="font-mono text-sm text-gray-900">{primaryCurrency} {sales.reduce((sum, s) => sum + s.net_amount, 0).toLocaleString()}</span>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pt-2 gap-3 border-t border-gray-100 text-xs bg-gray-50/50 p-4 rounded-xl font-bold">
+              <div className="flex items-center gap-6">
+                <div>
+                  <span className="block text-[9px] text-gray-400 uppercase">Grand Sales Volume</span>
+                  <span className="font-mono text-sm text-gray-900">{primaryCurrency} {sales.reduce((sum, s) => sum + (s.net_amount || 0), 0).toLocaleString()}</span>
+                </div>
+                <div>
+                  <span className="block text-[9px] text-gray-400 uppercase">Calculated Gross Profit</span>
+                  <span className="font-mono text-sm text-emerald-700">
+                    {primaryCurrency} {(sales.reduce((sum, s) => sum + (s.net_amount || 0), 0) - saleItems.reduce((sum, item) => sum + (item.quantity * item.cost_price_at_sale), 0)).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-400 italic font-medium max-w-[240px] leading-tight">
+                *Profit values are calculated based on registered production costs at the time of checkout.
+              </p>
             </div>
           </div>
         )}
@@ -206,8 +230,8 @@ export default function ReportsView() {
                         <td className="py-2 text-center font-mono text-[10px] text-gray-450">{p.sku}</td>
                         <td className="py-2 text-center font-bold font-mono">{Number(p.stock).toFixed(2)} <span className="text-[10px] text-gray-400 font-normal">{p.unit}</span></td>
                         <td className="py-2 text-right font-mono">{p.cost_price}</td>
-                        <td className="py-2 text-right font-mono font-bold text-gray-900">{primaryCurrency} {costVal.toLocaleString()}</td>
-                        <td className="py-2 text-right font-mono font-bold text-orange-650">{primaryCurrency} {retailVal.toLocaleString()}</td>
+                        <td className="py-2 text-right font-mono font-bold text-gray-900">{primaryCurrency} {(costVal || 0).toLocaleString()}</td>
+                        <td className="py-2 text-right font-mono font-bold text-orange-650">{primaryCurrency} {(retailVal || 0).toLocaleString()}</td>
                       </tr>
                     );
                   })}
@@ -244,7 +268,7 @@ export default function ReportsView() {
                       <td className="py-2 font-bold text-gray-905">{c.name}</td>
                       <td className="py-2 font-mono">{c.phone}</td>
                       <td className="py-2 text-gray-500 font-medium">{c.email || 'N/A'}</td>
-                      <td className="py-2 text-right font-bold text-red-700 font-mono text-xs">{c.balance.toLocaleString()}</td>
+                      <td className="py-2 text-right font-bold text-red-700 font-mono text-xs">{(c.balance || 0).toLocaleString()}</td>
                       <td className="py-2 text-center">
                         <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-red-50 text-red-750 font-semibold border border-red-100">
                           Pending collection
@@ -259,7 +283,7 @@ export default function ReportsView() {
             <div className="flex justify-between items-center border-t border-gray-100 bg-gray-105 p-3.5 rounded-xl text-xs font-bold font-sans">
               <span>Total Deferred Ledger Credit liabilities:</span>
               <span className="font-mono text-sm text-orange-700">
-                {primaryCurrency} {customers.reduce((sum, c) => sum + Math.max(0, c.balance), 0).toLocaleString()}
+                {primaryCurrency} {customers.reduce((sum, c) => sum + Math.max(0, (c.balance || 0)), 0).toLocaleString()}
               </span>
             </div>
           </div>
@@ -267,38 +291,94 @@ export default function ReportsView() {
 
         {/* 4. COMPREHENSIVE INCOME STATEMENT */}
         {activeReportTab === 'profit_loss' && (
-          <div className="space-y-4 max-w-lg mx-auto bg-gray-50 p-6 rounded-2xl border border-gray-150 shadow-3xs">
-            <h4 className="text-center text-xs font-extrabold text-gray-950 uppercase tracking-widest pb-3 border-b border-dashed border-gray-200">
-              Milling Income Sheet Statement
-            </h4>
+          <div className="space-y-6 max-w-4xl mx-auto">
+            <div className="bg-gray-50 p-6 rounded-2xl border border-gray-150 shadow-3xs grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div>
+                <h4 className="text-xs font-extrabold text-gray-950 uppercase tracking-widest pb-3 border-b border-dashed border-gray-200 mb-4">
+                  Milling Income Sheet Statement
+                </h4>
 
-            <div className="space-y-3 pt-3 text-xs text-gray-800 font-medium leading-loose">
-              <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-1.5">
-                <span>(+) Inbound Sales Receipts:</span>
-                <span className="font-mono text-gray-950 font-bold">{primaryCurrency} {reportsData.monthlyRevenue.toLocaleString()}</span>
+                <div className="space-y-3 pt-3 text-xs text-gray-800 font-medium leading-loose">
+                  <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-1.5">
+                    <span>(+) Inbound Sales Receipts:</span>
+                    <span className="font-mono text-gray-950 font-bold">{primaryCurrency} {(reportsData.monthlyRevenue || 0).toLocaleString()}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-1.5">
+                    <span>(-) Base Flour Production Cost (COGS):</span>
+                    <span className="font-mono text-orange-850">-{primaryCurrency} {(reportsData.monthlyCOGS || 0).toLocaleString()}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-2">
+                    <span>(-) Operations Expenses Outflow:</span>
+                    <span className="font-mono text-red-700">-{primaryCurrency} {(reportsData.monthlyExpenses || 0).toLocaleString()}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center font-extrabold text-sm border-t-2 border-gray-300 pt-3">
+                    <span className="text-gray-950 uppercase tracking-tighter">Grand Net Profit margin:</span>
+                    <span className={`font-mono text-lg ${reportsData.netMonthlyProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                      {reportsData.netMonthlyProfit < 0 ? '-' : ''}{primaryCurrency} {Math.abs(reportsData.netMonthlyProfit || 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-1.5">
-                <span>(-) Base Flour Production Cost (COGS):</span>
-                <span className="font-mono text-orange-850">-{primaryCurrency} {reportsData.monthlyCOGS.toLocaleString()}</span>
-              </div>
+              <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-3xs flex flex-col gap-4">
+                <div>
+                  <h5 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    <Package className="h-3.5 w-3.5 text-blue-500" />
+                    Product Cost Breakdown (COGS)
+                  </h5>
+                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    {saleItems.length === 0 ? (
+                      <div className="py-4 text-center italic text-gray-400 text-[10px]">No sales recorded yet.</div>
+                    ) : (
+                      Object.entries(
+                        saleItems.reduce((acc, item) => {
+                          const cost = (item.quantity * item.cost_price_at_sale);
+                          acc[item.product_name] = (acc[item.product_name] || 0) + cost;
+                          return acc;
+                        }, {} as Record<string, number>)
+                      ).sort((a, b) => b[1] - a[1]).map(([name, cost]) => (
+                        <div key={name} className="flex justify-between items-center py-1 border-b border-gray-50 last:border-0">
+                          <span className="text-[10px] font-semibold text-gray-650 truncate max-w-[140px]">{name}</span>
+                          <span className="text-[10px] font-bold font-mono text-orange-700">{primaryCurrency} {cost.toLocaleString()}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
 
-              <div className="flex justify-between items-center text-gray-550 border-b border-gray-200 pb-2">
-                <span>(-) Operations Expenses Outflow:</span>
-                <span className="font-mono text-red-700">-{primaryCurrency} {reportsData.monthlyExpenses.toLocaleString()}</span>
-              </div>
-
-              <div className="flex justify-between items-center font-extrabold text-sm border-t-2 border-gray-300 pt-3">
-                <span className="text-gray-950">Grand Net Profit margin:</span>
-                <span className={`font-mono text-base ${reportsData.netMonthlyProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                  {primaryCurrency} {reportsData.netMonthlyProfit.toLocaleString()}
-                </span>
+                <div className="pt-3 border-t border-gray-100">
+                  <h5 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    <Coins className="h-3.5 w-3.5 text-orange-500" />
+                    Operational Expenses
+                  </h5>
+                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                    {expenses.length === 0 ? (
+                      <div className="py-4 text-center italic text-gray-400 text-[10px]">No manual expenses tracked.</div>
+                    ) : (
+                      Object.entries(
+                        expenses.reduce((acc, e) => {
+                          acc[e.category] = (acc[e.category] || 0) + e.amount;
+                          return acc;
+                        }, {} as Record<string, number>)
+                      ).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                        <div key={cat} className="flex justify-between items-center py-1 border-b border-gray-50 last:border-0">
+                          <span className="text-[10px] font-semibold text-gray-650">{cat}</span>
+                          <span className="text-[10px] font-bold font-mono text-red-700">{primaryCurrency} {amt.toLocaleString()}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Footnote stamp */}
-            <p className="text-center text-[9px] text-gray-400 mt-6 leading-relaxed select-none">
-              Calculations based on real-time business ledgers. Profit figures are adjusted for instore customer discounts claimed during checkouts.
+            <p className="text-center text-[9px] text-gray-400 leading-relaxed select-none px-12 italic">
+              Calculations based on real-time business ledgers. Profit figures are adjusted for instore customer discounts claimed during checkouts. 
+              Deferred credit receivables ({primaryCurrency} {reportsData.totalOutstandingCredit.toLocaleString()}) are tracked separately as assets.
             </p>
           </div>
         )}

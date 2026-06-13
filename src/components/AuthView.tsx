@@ -6,11 +6,10 @@ export default function AuthView() {
   const { login, signUp, verifyEmailCode, resendVerificationEmail, verification } = useStore();
   const [isSignUp, setIsSignUp] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
-  const [isOfflineMode, setIsOfflineMode] = useState(localStorage.getItem('force_offline') === 'true');
   
   // Form fields
-  const [email, setEmail] = useState('ac.repair.in.dubai3@gmail.com');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [shopName, setShopName] = useState('');
   
@@ -382,38 +381,6 @@ export default function AuthView() {
             </div>
           </div>
 
-          {/* Connection Mode Toggle Slider */}
-          <div className="mt-5 border-t border-gray-100 pt-4" id="db-mode-selector-container">
-            <div className="flex items-center justify-between bg-gray-50 border border-gray-150 p-3 rounded-xl">
-              <div className="text-left">
-                <span className="block text-[9px] font-bold text-gray-400 uppercase tracking-widest leading-none">Database Engine</span>
-                <span className={`inline-flex items-center gap-1.5 text-xs font-extrabold mt-1.5 ${isOfflineMode ? 'text-amber-600' : 'text-emerald-600'}`}>
-                  <span className={`h-2.5 w-2.5 rounded-full ${isOfflineMode ? 'bg-amber-550 animate-pulse' : 'bg-emerald-555 animate-pulse'}`} />
-                  {isOfflineMode ? 'Offline Local Sandbox' : 'Online Live Supabase'}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const toOffline = !isOfflineMode;
-                  setIsOfflineMode(toOffline);
-                  if (toOffline) {
-                    localStorage.setItem('force_offline', 'true');
-                  } else {
-                    localStorage.removeItem('force_offline');
-                  }
-                  window.location.reload();
-                }}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition duration-150 ease-in-out cursor-pointer shadow-3xs hover:scale-[1.02] ${
-                  isOfflineMode 
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
-                    : 'bg-amber-600 hover:bg-amber-700 text-white'
-                }`}
-              >
-                {isOfflineMode ? 'Run Live Cloud' : 'Work Offline (Instant)'}
-              </button>
-            </div>
-          </div>
           
           {/* Custom URL Override connection troubleshooter card */}
           {!!(localStorage.getItem('supa_url_override') || localStorage.getItem('supa_key_override')) && (
@@ -436,14 +403,6 @@ export default function AuthView() {
               </button>
             </div>
           )}
-          
-          <div className="mt-6 p-3 bg-gray-50 border border-gray-150 rounded-xl">
-            <span className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Developer Fast-Track Credentials</span>
-            <div className="text-[11px] text-gray-650 flex flex-col gap-1 text-left">
-              <div><span className="font-semibold text-gray-800">Demo User:</span> <code className="bg-gray-200 text-gray-800 px-1 rounded font-mono">ac.repair.in.dubai3@gmail.com</code></div>
-              <div><span className="font-semibold text-gray-800">Passcode:</span> <code className="bg-gray-200 text-gray-800 px-1 rounded font-mono">password123</code></div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

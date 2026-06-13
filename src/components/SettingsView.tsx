@@ -56,8 +56,7 @@ export default function SettingsView() {
   const clearSupabaseCredentials = () => {
     localStorage.removeItem('supa_url_override');
     localStorage.removeItem('supa_key_override');
-    localStorage.setItem('force_offline', 'true');
-    setMsg('Credentials successfully wiped. Switching device workspace to offline fallback data. Refreshing...');
+    setMsg('Credentials successfully wiped. Reverting device to standard universal cloud database. Refreshing...');
     setTimeout(() => {
       window.location.reload();
     }, 1500);

@@ -11,6 +11,15 @@ import {
   Notification, ActivityLog, UserRole 
 } from '../types';
 
+const formatErr = (err: any): string => {
+  const msg = err?.message || err?.toString() || 'Unknown error occurred';
+  if (msg.includes('products_unit_check') || msg.includes('unit_check')) {
+    return 'Failed to save product: Your live Supabase database has an active legacy CHECK constraint "products_unit_check" restricting allowed unit values. To fix this instantly, please run this statement in your Supabase SQL Editor: ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_unit_check;';
+  }
+  return msg;
+};
+
+
 interface VerificationState {
   emailSent: boolean;
   emailToVerify: string | null;
@@ -47,6 +56,8 @@ interface AppStore {
   appMode: 'demo' | 'live_supabase';
   loading: boolean;
   errorMessage: string | null;
+  connectionState: 'online' | 'slow' | 'offline' | 'syncing';
+  checkConnectivity: () => Promise<void>;
 
   // Real-time Event Subscriptions
   startRealtimeSimulation: () => () => void;
@@ -317,6 +328,7 @@ export const useStore = create<AppStore>((set, get) => ({
   appMode: 'demo',
   loading: false,
   errorMessage: null,
+  connectionState: 'online',
   verification: {
     emailSent: false,
     emailToVerify: null,
@@ -339,8 +351,46 @@ export const useStore = create<AppStore>((set, get) => ({
   activityLogs: [],
   settings: {},
 
+  checkConnectivity: async () => {
+    // If no credentials or config offline, we are offline
+    if (!config.isOnline || !rawSupabase) {
+      set({ connectionState: 'offline' });
+      return;
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      set({ connectionState: 'offline' });
+      return;
+    }
+
+    try {
+      const start = Date.now();
+      // Fast check to select 1 id row from profiles
+      const pingPromise = rawSupabase.from('profiles').select('id').limit(1);
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000));
+      
+      await Promise.race([pingPromise, timeoutPromise]);
+      const duration = Date.now() - start;
+      const prevState = get().connectionState;
+      const nextState = duration > 2000 ? 'slow' : 'online';
+      
+      set({ connectionState: nextState });
+
+      // Auto-sync if we transition from offline/slow to genuine online!
+      if ((prevState === 'offline' || prevState === 'slow') && nextState === 'online') {
+        console.log('[AUTO-SYNC] Stable internet detected. Automatically compiling and syncing live entries...');
+        set({ connectionState: 'syncing' });
+        await get().syncLocalToCloud();
+        set({ connectionState: 'online' });
+      }
+    } catch (err) {
+      console.warn('[CONNECTIVITY CHECK] Supabase server is unreachable or offline:', err);
+      set({ connectionState: 'offline' });
+    }
+  },
+
   initStore: async () => {
-    const savedEmail = localStorage.getItem('logged_in_user_email') || 'ac.repair.in.dubai3@gmail.com';
+    const savedEmail = localStorage.getItem('logged_in_user_email');
     
     // Resolve dynamic universal database configuration from the container's environment secrets
     if (typeof initSupabase === 'function') {
@@ -371,21 +421,8 @@ export const useStore = create<AppStore>((set, get) => ({
           
         if (sErr) throw sErr;
 
-        // Pick matching user profile or top user
-        const matchedProfile = profiles?.find((p: any) => p.email.toLowerCase() === savedEmail.toLowerCase()) || profiles?.[0] || null;
-        if (matchedProfile) {
-          const associatedShop = shops?.find((s: any) => s.id === matchedProfile.shop_id) || null;
-          set({
-            currentUser: matchedProfile,
-            currentShop: associatedShop,
-            allShops: shops || [],
-            allProfiles: profiles || [],
-            appMode: 'live_supabase',
-            loading: false
-          });
-          await get().refreshData();
-        } else {
-          // If profile not found but DB exists, seed owner on the database
+        if (profiles && profiles.length === 0) {
+          // If DB is completely empty, seed initial data but do NOT auto-login unless requested
           const defaultShopId = '11111111-1111-1111-1111-111111111111';
           const defaultUserId = '22222222-2222-2222-2222-222222222222';
           
@@ -404,7 +441,7 @@ export const useStore = create<AppStore>((set, get) => ({
           const seededOwner = {
             id: defaultUserId,
             shop_id: defaultShopId,
-            email: savedEmail,
+            email: 'ac.repair.in.dubai3@gmail.com',
             full_name: 'M. Ibrahim Khan (Chakki Owner)',
             role: 'owner',
             avatar_url: null,
@@ -446,42 +483,78 @@ export const useStore = create<AppStore>((set, get) => ({
           }]);
 
           const liveShops = await supabase.from('shops').select('*');
+          const liveProfiles = await supabase.from('profiles').select('*');
           
           set({
-            currentUser: seededOwner as any,
-            currentShop: liveShops.data?.[0] || null,
+            currentUser: null,
+            currentShop: null,
             allShops: liveShops.data || [],
-            allProfiles: [seededOwner as any],
+            allProfiles: liveProfiles.data || [],
             appMode: 'live_supabase',
             loading: false
           });
-          await get().refreshData();
+        } else {
+          // Normal flow - data exists. See if we have an active session to auto-login.
+          const matchedProfile = savedEmail ? profiles?.find((p: any) => p.email.toLowerCase() === savedEmail.toLowerCase()) : null;
+          const associatedShop = matchedProfile ? (shops?.find((s: any) => s.id === matchedProfile.shop_id) || null) : null;
+          
+          set({
+            currentUser: matchedProfile || null,
+            currentShop: associatedShop,
+            allShops: shops || [],
+            allProfiles: profiles || [],
+            appMode: 'live_supabase',
+            loading: false
+          });
+          
+          if (matchedProfile) {
+            await get().refreshData();
+          }
         }
       } catch (err: any) {
-        console.warn('Supabase Live Load Failed, falling back to Offline engine:', err);
-        set({ loading: false });
-        get().initOfflineStore();
+        console.warn('Supabase Live Load Failed:', err);
+        const errMsg = String(err.message || '').toLowerCase();
+        const isNetwork = errMsg.includes('fetch') || errMsg.includes('network') || errMsg.includes('timeout') || err.status === 0;
+        
+        if (isNetwork) {
+          console.log('[INIT RETRY FALLBACK] Network offline. Bootstrapping local offline store fallback...');
+          // Toggle online flag false and load offline store
+          config.isOnline = false;
+          set({ connectionState: 'offline' });
+          get().initOfflineStore();
+        } else {
+          set({ loading: false, currentUser: null, currentShop: null });
+        }
       }
     } else {
-      get().initOfflineStore();
+      set({ loading: false, currentUser: null, currentShop: null });
     }
   },
 
   initOfflineStore: () => {
     const profiles = localDB.getCollection<Profile>('profiles');
     const shops = localDB.getCollection<Shop>('shops');
+    const savedEmail = localStorage.getItem('logged_in_user_email');
     
-    const firstOwner = profiles.find(p => p.role === 'owner') || profiles[0];
-    if (firstOwner) {
-      const associatedShop = shops.find(s => s.id === firstOwner.shop_id) || shops[0] || null;
+    const matchedProfile = savedEmail ? profiles.find(p => p.email.toLowerCase() === savedEmail.toLowerCase()) : null;
+    if (matchedProfile) {
+      const associatedShop = shops.find(s => s.id === matchedProfile.shop_id) || shops[0] || null;
       set({ 
-        currentUser: firstOwner, 
+        currentUser: matchedProfile, 
         currentShop: associatedShop,
         allShops: shops,
         allProfiles: profiles,
         appMode: 'demo'
       });
       get().refreshData();
+    } else {
+      set({ 
+        currentUser: null, 
+        currentShop: null,
+        allShops: shops,
+        allProfiles: profiles,
+        appMode: 'demo'
+      });
     }
   },
 
@@ -1056,6 +1129,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
   },
 
   logout: () => {
+    localStorage.removeItem('logged_in_user_email');
     set({ currentUser: null, currentShop: null });
   },
 
@@ -1101,46 +1175,79 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       updated_at: new Date().toISOString()
     };
 
-    // Optimistic Update: instantly display newly added product
-    const currentList = get().products;
-    set({
-      products: [...currentList, newProduct]
-    });
-
     if (config.isOnline && supabase) {
-      // Async database insert in background
-      (async () => {
-        try {
-          const { error } = await supabase.from('products').insert([newProduct]);
-          if (error) throw error;
-          
-          if (newProduct.stock > 0) {
-            await supabase.from('inventory_logs').insert([{
-              id: crypto.randomUUID(),
-              shop_id: shop.id,
-              product_id: newProduct.id,
-              type: 'stock_in',
-              quantity: newProduct.stock,
-              unit: newProduct.unit,
-              reason: 'Product Stock Seed',
-              created_by: get().currentUser?.id || 'sys',
-              created_at: new Date().toISOString()
-            }]);
-          }
-        } catch (err) {
-          console.error('Failed to write product to live Supabase:', err);
-        } finally {
-          get().refreshData();
+      try {
+        const { error } = await supabase.from('products').insert([newProduct]);
+        if (error) throw error;
+        
+        if (newProduct.stock > 0) {
+          const { error: logErr } = await supabase.from('inventory_logs').insert([{
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            product_id: newProduct.id,
+            type: 'stock_in',
+            quantity: newProduct.stock,
+            unit: newProduct.unit,
+            reason: 'Product Stock Seed',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          }]);
+          if (logErr) throw logErr;
         }
-      })();
+
+        // On successful database insertion, update localDB and UI state atomically
+        const productsLocal = localDB.getCollection<Product>('products');
+        productsLocal.push(newProduct);
+        localDB.saveCollection('products', productsLocal);
+
+        if (newProduct.stock > 0) {
+          const logsLocal = localDB.getCollection<InventoryLog>('inventory_logs');
+          logsLocal.push({
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            product_id: newProduct.id,
+            type: 'stock_in',
+            quantity: newProduct.stock,
+            unit: newProduct.unit,
+            reason: 'Initial Product Stock Seed',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          });
+          localDB.saveCollection('inventory_logs', logsLocal);
+        }
+
+        const currentList = get().products;
+        set({
+          products: [...currentList, newProduct],
+          notifications: [{
+            id: `prod-notif-${Date.now()}`,
+            shop_id: shop.id,
+            title: 'Product Added',
+            message: `${newProduct.name} is now available in your catalog.`,
+            type: 'success',
+            read: false,
+            created_at: new Date().toISOString()
+          }, ...get().notifications],
+          errorMessage: null
+        });
+
+      } catch (err: any) {
+        console.error('Failed to write product to live Supabase:', err);
+        const errMsg = formatErr(err);
+        set({ errorMessage: errMsg });
+        throw new Error(errMsg);
+      } finally {
+        await get().refreshData();
+      }
     } else {
-      const products = localDB.getCollection<Product>('products');
-      products.push(newProduct);
-      localDB.saveCollection('products', products);
+      // Offline mode
+      const productsLocal = localDB.getCollection<Product>('products');
+      productsLocal.push(newProduct);
+      localDB.saveCollection('products', productsLocal);
 
       if (newProduct.stock > 0) {
-        const logs = localDB.getCollection<InventoryLog>('inventory_logs');
-        logs.push({
+        const logsLocal = localDB.getCollection<InventoryLog>('inventory_logs');
+        logsLocal.push({
           id: `log-${Date.now()}`,
           shop_id: shop.id,
           product_id: newProduct.id,
@@ -1151,9 +1258,16 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
           created_by: get().currentUser?.id || 'sys',
           created_at: new Date().toISOString()
         });
-        localDB.saveCollection('inventory_logs', logs);
+        localDB.saveCollection('inventory_logs', logsLocal);
       }
-      get().refreshData();
+
+      const currentList = get().products;
+      set({
+        products: [...currentList, newProduct],
+        errorMessage: null
+      });
+
+      await get().refreshData();
     }
   },
 
@@ -1162,94 +1276,137 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const prevStock = prevProd ? prevProd.stock : 0;
     const unit = prevProd ? prevProd.unit : 'KG';
 
-    // Optimistic Update: instantly update product in UI state
-    set({
-      products: get().products.map(p => p.id === id ? { ...p, ...data, updated_at: new Date().toISOString() } : p)
-    });
-
     if (config.isOnline && supabase) {
-      // Async background DB synchronization
-      (async () => {
-        try {
-          const { error } = await supabase
-            .from('products')
-            .update({
-              ...data,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', id);
-          if (error) throw error;
+      try {
+        const { error } = await supabase
+          .from('products')
+          .update({
+            ...data,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id);
+        if (error) throw error;
+
+        if (data.stock !== undefined && data.stock !== prevStock) {
+          const diff = data.stock - prevStock;
+          const { error: logErr } = await supabase.from('inventory_logs').insert([{
+            id: crypto.randomUUID(),
+            shop_id: get().currentShop?.id || '',
+            product_id: id,
+            type: diff > 0 ? 'stock_in' : 'stock_out',
+            quantity: Math.abs(diff),
+            unit: unit,
+            reason: 'Direct Stock Override Edit',
+            created_by: get().currentUser?.id || 'sys',
+            created_at: new Date().toISOString()
+          }]);
+          if (logErr) throw logErr;
+        }
+
+        // Save locally as backup upon successful DB update
+        const productsLocal = localDB.getCollection<Product>('products');
+        const idx = productsLocal.findIndex(p => p.id === id);
+        if (idx !== -1) {
+          productsLocal[idx] = { ...productsLocal[idx], ...data, updated_at: new Date().toISOString() };
+          localDB.saveCollection('products', productsLocal);
 
           if (data.stock !== undefined && data.stock !== prevStock) {
             const diff = data.stock - prevStock;
-            await supabase.from('inventory_logs').insert([{
+            const logsLocal = localDB.getCollection<InventoryLog>('inventory_logs');
+            logsLocal.push({
               id: crypto.randomUUID(),
               shop_id: get().currentShop?.id || '',
               product_id: id,
               type: diff > 0 ? 'stock_in' : 'stock_out',
               quantity: Math.abs(diff),
-              unit: unit,
+              unit: productsLocal[idx].unit,
               reason: 'Direct Stock Override Edit',
               created_by: get().currentUser?.id || 'sys',
               created_at: new Date().toISOString()
-            }]);
+            });
+            localDB.saveCollection('inventory_logs', logsLocal);
           }
-        } catch (err) {
-          console.error('Failed to sync updated product to live Supabase:', err);
-        } finally {
-          get().refreshData();
         }
-      })();
+
+        set({
+          products: get().products.map(p => p.id === id ? { ...p, ...data, updated_at: new Date().toISOString() } : p),
+          errorMessage: null
+        });
+
+      } catch (err: any) {
+        console.error('Failed to sync updated product to live Supabase:', err);
+        const errMsg = formatErr(err);
+        set({ errorMessage: errMsg });
+        throw new Error(errMsg);
+      } finally {
+        await get().refreshData();
+      }
     } else {
-      const products = localDB.getCollection<Product>('products');
-      const idx = products.findIndex(p => p.id === id);
+      // Offline mode
+      const productsLocal = localDB.getCollection<Product>('products');
+      const idx = productsLocal.findIndex(p => p.id === id);
       if (idx !== -1) {
-        products[idx] = { ...products[idx], ...data, updated_at: new Date().toISOString() };
-        localDB.saveCollection('products', products);
+        productsLocal[idx] = { ...productsLocal[idx], ...data, updated_at: new Date().toISOString() };
+        localDB.saveCollection('products', productsLocal);
 
         if (data.stock !== undefined && data.stock !== prevStock) {
           const diff = data.stock - prevStock;
-          const logs = localDB.getCollection<InventoryLog>('inventory_logs');
-          logs.push({
+          const logsLocal = localDB.getCollection<InventoryLog>('inventory_logs');
+          logsLocal.push({
             id: `log-${Date.now()}`,
             shop_id: get().currentShop?.id || '',
             product_id: id,
             type: diff > 0 ? 'stock_in' : 'stock_out',
             quantity: Math.abs(diff),
-            unit: products[idx].unit,
+            unit: productsLocal[idx].unit,
             reason: 'Direct Stock Override Edit',
             created_by: get().currentUser?.id || 'sys',
             created_at: new Date().toISOString()
           });
-          localDB.saveCollection('inventory_logs', logs);
+          localDB.saveCollection('inventory_logs', logsLocal);
         }
       }
-      get().refreshData();
+
+      set({
+        products: get().products.map(p => p.id === id ? { ...p, ...data, updated_at: new Date().toISOString() } : p),
+        errorMessage: null
+      });
+
+      await get().refreshData();
     }
   },
 
   deleteProduct: async (id) => {
-    // Optimistic Update: instantly clear product from UI state
-    set({
-      products: get().products.filter(p => p.id !== id)
-    });
-
     if (config.isOnline && supabase) {
-      // Async background DB delete
-      (async () => {
-        try {
-          const { error } = await supabase.from('products').delete().eq('id', id);
-          if (error) throw error;
-        } catch (err) {
-          console.error('Failed to delete live product:', err);
-        } finally {
-          get().refreshData();
-        }
-      })();
+      try {
+        const { error } = await supabase.from('products').delete().eq('id', id);
+        if (error) throw error;
+
+        const productsLocal = localDB.getCollection<Product>('products').filter(p => p.id !== id);
+        localDB.saveCollection('products', productsLocal);
+
+        set({
+          products: get().products.filter(p => p.id !== id),
+          errorMessage: null
+        });
+      } catch (err: any) {
+        console.error('Failed to delete live product:', err);
+        const errMsg = formatErr(err);
+        set({ errorMessage: errMsg });
+        throw new Error(errMsg);
+      } finally {
+        await get().refreshData();
+      }
     } else {
-      const products = localDB.getCollection<Product>('products').filter(p => p.id !== id);
-      localDB.saveCollection('products', products);
-      get().refreshData();
+      const productsLocal = localDB.getCollection<Product>('products').filter(p => p.id !== id);
+      localDB.saveCollection('products', productsLocal);
+
+      set({
+        products: get().products.filter(p => p.id !== id),
+        errorMessage: null
+      });
+
+      await get().refreshData();
     }
   },
 
@@ -1266,25 +1423,27 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
     // Optimistic Update: instantly update list in UI
     set({
-      categories: [...get().categories, newCat]
+      categories: [...get().categories, newCat],
+      errorMessage: null
     });
 
+    // Always back up to localDB as fallback/safeguard
+    const categories = localDB.getCollection<any>('categories');
+    categories.push(newCat);
+    localDB.saveCollection('categories', categories);
+
     if (config.isOnline && supabase) {
-      (async () => {
-        try {
-          const { error } = await supabase.from('product_categories').insert([newCat]);
-          if (error) throw error;
-        } catch (err) {
-          console.error('Failed to load category to live DB:', err);
-        } finally {
-          get().refreshData();
-        }
-      })();
+      try {
+        const { error } = await supabase.from('product_categories').insert([newCat]);
+        if (error) throw error;
+      } catch (err: any) {
+        console.error('Failed to load category to live DB:', err);
+        set({ errorMessage: `Failed to insert category in live Supabase database: ${err.message || err.toString()}` });
+      } finally {
+        await get().refreshData();
+      }
     } else {
-      const categories = localDB.getCollection<any>('categories');
-      categories.push(newCat);
-      localDB.saveCollection('categories', categories);
-      get().refreshData();
+      await get().refreshData();
     }
 
     return newCat;
@@ -1303,7 +1462,16 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
     // Optimistic Update: instantly reflect inventory balance in UI state
     set({
-      products: get().products.map(p => p.id === product_id ? { ...p, stock: computedStock, updated_at: new Date().toISOString() } : p)
+      products: get().products.map(p => p.id === product_id ? { ...p, stock: computedStock, updated_at: new Date().toISOString() } : p),
+      notifications: [{
+        id: `adj-notif-${Date.now()}`,
+        shop_id: shop.id,
+        title: 'Inventory Adjusted',
+        message: `${targetProduct.name} stock updated to ${computedStock} ${targetProduct.unit}`,
+        type: 'success',
+        read: false,
+        created_at: new Date().toISOString()
+      }, ...get().notifications]
     });
 
     if (config.isOnline && supabase) {
@@ -1390,7 +1558,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     for (const line of data.items) {
       const prod = get().products.find(p => p.id === line.product_id);
       if (!prod) continue;
-      const lineTotal = line.quantity * line.sale_price;
+      const lineTotal = Math.round(line.quantity * line.sale_price * 100) / 100;
       itemSubtotal += lineTotal;
 
       saleItemsList.push({
@@ -1466,12 +1634,23 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     });
 
     // Update state instantly so checkout completes immediately!
+    const successNotification: Notification = {
+      id: `sale-notif-${Date.now()}`,
+      shop_id: shop.id,
+      title: 'Sale Completed',
+      message: `Invoice ${invNumber} generated successfully.`,
+      type: 'success',
+      read: false,
+      created_at: new Date().toISOString()
+    };
+
     set({
       products: updatedProducts,
       customers: updatedCustomers,
       sales: [newSale, ...get().sales],
       saleItems: [...saleItemsList, ...get().saleItems],
-      invoices: [newInvoice, ...get().invoices]
+      invoices: [newInvoice, ...get().invoices],
+      notifications: [successNotification, ...get().notifications]
     });
 
     if (config.isOnline && supabase) {
@@ -1660,6 +1839,19 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
       invoices.push(newInvoice);
       localDB.saveCollection('invoices', invoices);
+
+      const successNotif: Notification = {
+        id: `not-success-${Date.now()}`,
+        shop_id: shop.id,
+        title: 'Sale Completed',
+        message: `Invoice ${invNumber} generated successfully.`,
+        type: 'success',
+        read: false,
+        created_at: new Date().toISOString()
+      };
+      const alerts = localDB.getCollection<Notification>('notifications');
+      alerts.push(successNotif);
+      localDB.saveCollection('notifications', alerts);
 
       const logs = localDB.getCollection<ActivityLog>('activity_logs');
       const customerLabel = data.customer_id 
@@ -2002,8 +2194,19 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     localDB.saveCollection('expenses', expensesColl);
 
     // Optimistic Update: instantly add expense to visual table
+    const successNotif: Notification = {
+      id: `exp-notif-${Date.now()}`,
+      shop_id: shop.id,
+      title: 'Expense Recorded',
+      message: `Manual expense of ${data.amount} for ${data.category} logged.`,
+      type: 'success',
+      read: false,
+      created_at: new Date().toISOString()
+    };
+
     set({
-      expenses: [...get().expenses, newExp]
+      expenses: [...get().expenses, newExp],
+      notifications: [successNotif, ...get().notifications]
     });
 
     if (config.isOnline && supabase) {
@@ -2049,6 +2252,11 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
   },
 
   clearNotification: async (id) => {
+    // Optimistic remove
+    set({
+      notifications: get().notifications.filter(n => n.id !== id)
+    });
+
     if (config.isOnline && supabase) {
       try {
         await supabase.from('notifications').delete().eq('id', id);

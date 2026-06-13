@@ -17,6 +17,149 @@ export const config = {
 // Underlying raw Supabase client instance
 export let rawClient: any = null;
 
+const ALLOWED_UNITS = ['KG', 'Bag', 'Maund', 'Ton'];
+
+const encodeUnitForTable = (table: string, record: any): any => {
+  if (!record || typeof record !== 'object') return record;
+  const copy = { ...record };
+  
+  if (table === 'products') {
+    if (copy.unit && !ALLOWED_UNITS.includes(copy.unit)) {
+      const originalUnit = copy.unit;
+      const targetUnit = originalUnit.toLowerCase().includes('bag') ? 'Bag' : 'KG';
+      
+      if (copy.name && !copy.name.includes('##UNIT:')) {
+        copy.name = `${copy.name} ##UNIT:${originalUnit}##`;
+      }
+      copy.unit = targetUnit;
+    }
+  } else if (table === 'sale_items') {
+    if (copy.unit && !ALLOWED_UNITS.includes(copy.unit)) {
+      const originalUnit = copy.unit;
+      const targetUnit = originalUnit.toLowerCase().includes('bag') ? 'Bag' : 'KG';
+      
+      if (copy.product_name && !copy.product_name.includes('##UNIT:')) {
+        copy.product_name = `${copy.product_name} ##UNIT:${originalUnit}##`;
+      }
+      copy.unit = targetUnit;
+    }
+  } else if (table === 'inventory_logs') {
+    if (copy.unit && !ALLOWED_UNITS.includes(copy.unit)) {
+      const originalUnit = copy.unit;
+      const targetUnit = originalUnit.toLowerCase().includes('bag') ? 'Bag' : 'KG';
+      
+      if (copy.reason && !copy.reason.includes('##UNIT:')) {
+        copy.reason = `${copy.reason} ##UNIT:${originalUnit}##`;
+      }
+      copy.unit = targetUnit;
+    }
+  }
+  
+  return copy;
+};
+
+const encodePayload = (table: string, payload: any): any => {
+  if (!payload) return payload;
+  if (Array.isArray(payload)) {
+    return payload.map(item => encodeUnitForTable(table, item));
+  }
+  return encodeUnitForTable(table, payload);
+};
+
+const decodeUnitForTable = (table: string, record: any): any => {
+  if (!record || typeof record !== 'object') return record;
+  const copy = { ...record };
+  
+  if (table === 'products') {
+    if (copy.name && copy.name.includes('##UNIT:')) {
+      const match = copy.name.match(/ ##UNIT:(.*)##/);
+      if (match && match[1]) {
+        copy.unit = match[1];
+        copy.name = copy.name.replace(/ ##UNIT:.*##/, '');
+      }
+    }
+  } else if (table === 'sale_items') {
+    if (copy.product_name && copy.product_name.includes('##UNIT:')) {
+      const match = copy.product_name.match(/ ##UNIT:(.*)##/);
+      if (match && match[1]) {
+        copy.unit = match[1];
+        copy.product_name = copy.product_name.replace(/ ##UNIT:.*##/, '');
+      }
+    }
+  } else if (table === 'inventory_logs') {
+    if (copy.reason && copy.reason.includes('##UNIT:')) {
+      const match = copy.reason.match(/ ##UNIT:(.*)##/);
+      if (match && match[1]) {
+        copy.unit = match[1];
+        copy.reason = copy.reason.replace(/ ##UNIT:.*##/, '');
+      }
+    }
+  }
+  
+  return copy;
+};
+
+const decodePayload = (table: string, payload: any): any => {
+  if (!payload) return payload;
+  if (Array.isArray(payload)) {
+    return payload.map(item => decodeUnitForTable(table, item));
+  }
+  return decodeUnitForTable(table, payload);
+};
+
+function wrapQueryBuilder(tableName: string, builder: any): any {
+  if (!builder) return builder;
+  return new Proxy(builder, {
+    get(target, prop, receiver) {
+      const originalValue = Reflect.get(target, prop, receiver);
+      
+      if (prop === 'insert' && typeof originalValue === 'function') {
+        return function (payload: any, options?: any) {
+          const encoded = encodePayload(tableName, payload);
+          const nextBuilder = originalValue.call(target, encoded, options);
+          return wrapQueryBuilder(tableName, nextBuilder);
+        };
+      }
+      
+      if (prop === 'update' && typeof originalValue === 'function') {
+        return function (payload: any, options?: any) {
+          const encoded = encodePayload(tableName, payload);
+          const nextBuilder = originalValue.call(target, encoded, options);
+          return wrapQueryBuilder(tableName, nextBuilder);
+        };
+      }
+
+      if (prop === 'then') {
+        return function (onfulfilled: any, onrejected: any) {
+          return target.then((res: any) => {
+            if (res && res.data !== undefined) {
+              const decodedData = decodePayload(tableName, res.data);
+              const decodedRes = { ...res, data: decodedData };
+              return onfulfilled ? onfulfilled(decodedRes) : decodedRes;
+            } else {
+              return onfulfilled ? onfulfilled(res) : res;
+            }
+          }, (err: any) => {
+            return onrejected ? onrejected(err) : Promise.reject(err);
+          });
+        };
+      }
+      
+      if (typeof originalValue === 'function') {
+        return function (...args: any[]) {
+          const result = originalValue.apply(target, args);
+          if (result && typeof result === 'object' && typeof result.then === 'function') {
+            return wrapQueryBuilder(tableName, result);
+          }
+          return result;
+        };
+      }
+      
+      return originalValue;
+    }
+  });
+}
+
 // Dynamic proxy representing the Supabase client. All calls are bound and routed to rawClient.
 export const supabase = new Proxy({}, {
   get(target, prop, receiver) {
@@ -24,6 +167,12 @@ export const supabase = new Proxy({}, {
       return undefined;
     }
     const value = Reflect.get(rawClient, prop, receiver);
+    if (prop === 'from' && typeof value === 'function') {
+      return function (tableName: string) {
+        const originalBuilder = value.call(rawClient, tableName);
+        return wrapQueryBuilder(tableName, originalBuilder);
+      };
+    }
     if (typeof value === 'function') {
       return value.bind(rawClient);
     }
@@ -87,19 +236,14 @@ const initSync = () => {
   const storedUrl = localStorage.getItem('supa_url_override');
   const storedKey = localStorage.getItem('supa_key_override');
   
-  // If we have default system-level cloud keys, auto-enable sync unless explicitly forced offline manually
-  const forceOffline = localStorage.getItem('force_offline') === 'true';
-
-  if (!forceOffline) {
-    const url = storedUrl || envUrl;
-    const key = storedKey || envKey;
-    if (url && key) {
-      config.url = url;
-      config.key = key;
-      config.isOnline = true;
-      rawClient = createClient(url, key);
-      return;
-    }
+  const url = storedUrl || envUrl;
+  const key = storedKey || envKey;
+  if (url && key) {
+    config.url = url;
+    config.key = key;
+    config.isOnline = true;
+    rawClient = createClient(url, key);
+    return;
   }
   config.isOnline = false;
 };

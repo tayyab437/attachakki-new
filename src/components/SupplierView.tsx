@@ -30,10 +30,12 @@ export default function SupplierView() {
   const primaryCurrency = currentShop?.currency || 'PKR';
 
   const filteredSuppliers = useMemo(() => {
-    return suppliers.filter(s => 
-      s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      (s.company && s.company.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    return suppliers
+      .filter(s => 
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        (s.company && s.company.toLowerCase().includes(searchTerm.toLowerCase()))
+      )
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }, [suppliers, searchTerm]);
 
   const activeSupplier = useMemo(() => {
@@ -44,7 +46,7 @@ export default function SupplierView() {
     if (!activeSupplierId) return [];
     return supplierTransactions
       .filter(tx => tx.supplier_id === activeSupplierId)
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }, [supplierTransactions, activeSupplierId]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -180,7 +182,7 @@ export default function SupplierView() {
               <div>
                 <span className="block text-[10px] text-gray-550 uppercase font-semibold">Dealer Target</span>
                 <span className="block font-bold text-gray-900 text-sm mt-0.5">{activeSupplier.name} ({activeSupplier.company || 'Private Wholesaler'})</span>
-                <span className="block text-indigo-700 text-xs font-bold mt-1">Pending debt: {primaryCurrency} {activeSupplier.balance.toLocaleString()}</span>
+                <span className="block text-indigo-700 text-xs font-bold mt-1">Pending debt: {primaryCurrency} {(activeSupplier.balance || 0).toLocaleString()}</span>
               </div>
 
               <div>
@@ -226,7 +228,7 @@ export default function SupplierView() {
                 type="submit"
                 className="w-full text-xs font-bold py-2.5 bg-gray-900 hover:bg-gray-800 text-white rounded-xl transition cursor-pointer"
               >
-                Execute Remit Payout (PKR {payAmount.toLocaleString()})
+                Execute Remit Payout (PKR {(payAmount || 0).toLocaleString()})
               </button>
             </form>
           </div>
@@ -263,7 +265,7 @@ export default function SupplierView() {
                   <span className="block text-[10px] text-gray-400 font-medium leading-none mt-0.5">{sup.company || 'Private Farm Seller'}</span>
                 </div>
                 <span className="inline-block px-2.5 py-1 text-xs font-extrabold font-mono rounded bg-indigo-50 text-indigo-805">
-                  {primaryCurrency} {sup.balance.toLocaleString()}
+                  {primaryCurrency} {(sup.balance || 0).toLocaleString()}
                 </span>
               </button>
             ))}
@@ -333,7 +335,7 @@ export default function SupplierView() {
 
                           <div className="text-right">
                             <span className={`block font-extrabold font-mono text-xs ${isPayOf ? 'text-indigo-700' : 'text-amber-800'}`}>
-                              {isPayOf ? '-' : '+'}{primaryCurrency} {tx.amount.toLocaleString()}
+                              {isPayOf ? '-' : '+'}{primaryCurrency} {(tx.amount || 0).toLocaleString()}
                             </span>
                             <span className="block text-[9px] font-medium text-gray-400 mt-0.5 uppercase tracking-wide">{tx.type.replace('_', ' ')}</span>
                           </div>

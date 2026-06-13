@@ -321,6 +321,14 @@ export default function AdminView() {
     }
   }, [directShopObj]);
 
+  const formatAdminErr = (err: any): string => {
+    const msg = err?.message || err?.toString() || 'Unknown error occurred';
+    if (msg.includes('products_unit_check') || msg.includes('unit_check')) {
+      return 'Failed to save product: Your live Supabase database has an active legacy CHECK constraint "products_unit_check" restricting allowed unit values. To fix this instantly, please run this statement in your Supabase SQL Editor: ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_unit_check;';
+    }
+    return msg;
+  };
+
   const handleDirectAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedShopId) return;
@@ -410,7 +418,7 @@ export default function AdminView() {
       refreshDirectData(selectedShopId);
       setTimeout(() => setSuccessMsg(''), 5000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to setup product.');
+      setErrorMsg(formatAdminErr(err));
     }
   };
 
@@ -442,7 +450,7 @@ export default function AdminView() {
       refreshDirectData(selectedShopId);
       setTimeout(() => setSuccessMsg(''), 5000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Error occurred.');
+      setErrorMsg(formatAdminErr(err));
     }
   };
 

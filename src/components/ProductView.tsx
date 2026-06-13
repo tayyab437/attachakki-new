@@ -34,6 +34,10 @@ export default function ProductView() {
   const [addingInlineCat, setAddingInlineCat] = useState(false);
   const [inlineCatName, setInlineCatName] = useState('');
 
+  // Submit and loading states
+  const [isSaving, setIsSaving] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
   // Search filtered products
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
@@ -44,7 +48,7 @@ export default function ProductView() {
     });
   }, [products, searchTerm, selectedCategory]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
@@ -60,13 +64,21 @@ export default function ProductView() {
       image_url: null
     };
 
-    if (editingId) {
-      updateProduct(editingId, payload);
-    } else {
-      addProduct(payload);
+    setIsSaving(true);
+    setLocalError(null);
+    try {
+      if (editingId) {
+        await updateProduct(editingId, payload);
+      } else {
+        await addProduct(payload);
+      }
+      resetForm();
+    } catch (err: any) {
+      console.error('Failed to save flour catalog product:', err);
+      setLocalError(err.message || 'An unexpected error occurred while writing to the database.');
+    } finally {
+      setIsSaving(false);
     }
-
-    resetForm();
   };
 
   const handleEdit = (prod: Product) => {
@@ -79,6 +91,7 @@ export default function ProductView() {
     setSalePrice(prod.sale_price);
     setStock(prod.stock);
     setMinStockAlert(prod.min_stock_alert);
+    setLocalError(null);
     setShowForm(true);
   };
 
@@ -95,6 +108,7 @@ export default function ProductView() {
     setShowForm(false);
     setAddingInlineCat(false);
     setInlineCatName('');
+    setLocalError(null);
   };
 
   const handleCreateCategory = async (e: React.FormEvent) => {
@@ -215,10 +229,21 @@ export default function ProductView() {
               <Sparkles className="h-4 w-4 text-orange-600" />
               <span>{editingId ? 'Modify Premium Flour Entry' : 'Configure New Flour Product'}</span>
             </h3>
-            <button onClick={resetForm} className="text-xs font-semibold text-gray-500 hover:text-gray-900">
+            <button 
+              onClick={resetForm} 
+              disabled={isSaving}
+              className="text-xs font-semibold text-gray-500 hover:text-gray-900 disabled:opacity-50"
+            >
               Cancel
             </button>
           </div>
+
+          {localError && (
+            <div className="bg-red-50 border border-red-200 text-red-800 p-3.5 rounded-xl text-xs font-medium flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 text-red-600 shrink-0" />
+              <span>{localError}</span>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="md:col-span-2">
@@ -226,10 +251,11 @@ export default function ProductView() {
               <input
                 type="text"
                 required
+                disabled={isSaving}
                 placeholder="e.g. Chakki Atta (Sargodha Grade-A)"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl disabled:bg-gray-100 disabled:text-gray-400"
               />
             </div>
 
@@ -237,10 +263,11 @@ export default function ProductView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">SKU Master Code</label>
               <input
                 type="text"
+                disabled={isSaving}
                 placeholder="Auto-generated"
                 value={sku}
                 onChange={(e) => setSku(e.target.value)}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl disabled:bg-gray-100 disabled:text-gray-400"
               />
             </div>
 
@@ -249,11 +276,12 @@ export default function ProductView() {
                 <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Category Segment</label>
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={() => {
                     setAddingInlineCat(!addingInlineCat);
                     setInlineCatName('');
                   }}
-                  className="text-[10px] text-orange-600 hover:text-orange-700 font-extrabold flex items-center gap-0.5 whitespace-nowrap cursor-pointer hover:underline"
+                  className="text-[10px] text-orange-600 hover:text-orange-700 font-extrabold flex items-center gap-0.5 whitespace-nowrap cursor-pointer hover:underline disabled:opacity-50"
                 >
                   {addingInlineCat ? 'Cancel' : '+ New Category'}
                 </button>
@@ -262,8 +290,9 @@ export default function ProductView() {
               {!addingInlineCat ? (
                 <select
                   value={category_id}
+                  disabled={isSaving}
                   onChange={(e) => setCategoryId(e.target.value)}
-                  className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                  className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl disabled:bg-gray-100 disabled:text-gray-400"
                 >
                   <option value="">Uncategorized</option>
                   {categories.map(cat => (
@@ -275,23 +304,29 @@ export default function ProductView() {
                   <input
                     type="text"
                     required
+                    disabled={isSaving}
                     placeholder="New category..."
                     value={inlineCatName}
                     onChange={(e) => setInlineCatName(e.target.value)}
-                    className="flex-1 text-xs px-2.5 py-2 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                    className="flex-1 text-xs px-2.5 py-2 bg-white border border-gray-200 focus:outline-none rounded-xl disabled:bg-gray-100 disabled:text-gray-400"
                   />
                   <button
                     type="button"
+                    disabled={isSaving}
                     onClick={async () => {
                       if (!inlineCatName.trim()) return;
-                      const res = await addCategory(inlineCatName, 'Created via catalog form');
-                      if (res && res.id) {
-                        setCategoryId(res.id);
+                      try {
+                        const res = await addCategory(inlineCatName, 'Created via catalog form');
+                        if (res && res.id) {
+                          setCategoryId(res.id);
+                        }
+                        setAddingInlineCat(false);
+                        setInlineCatName('');
+                      } catch (err: any) {
+                        setLocalError(err.message || 'Failed to create segment category.');
                       }
-                      setAddingInlineCat(false);
-                      setInlineCatName('');
                     }}
-                    className="px-3 bg-orange-600 hover:bg-orange-700 font-extrabold text-xs text-white rounded-xl cursor-pointer"
+                    className="px-3 bg-orange-600 hover:bg-orange-700 font-extrabold text-xs text-white rounded-xl cursor-pointer disabled:opacity-50"
                   >
                     Add
                   </button>
@@ -303,8 +338,9 @@ export default function ProductView() {
               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Sale Unit</label>
               <select
                 value={unit}
+                disabled={isSaving}
                 onChange={(e) => setUnit(e.target.value as any)}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl disabled:bg-gray-100 disabled:text-gray-400"
               >
                 <option value="KG">KG (Standard/Retail)</option>
                 <option value="Bag (10 KG)">Bag (10 KG Sack)</option>
@@ -324,9 +360,10 @@ export default function ProductView() {
                 step="any"
                 min={0}
                 required
+                disabled={isSaving}
                 value={cost_price}
                 onChange={(e) => setCostPrice(Number(e.target.value))}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono disabled:bg-gray-100 disabled:text-gray-400"
               />
             </div>
 
@@ -337,9 +374,10 @@ export default function ProductView() {
                 step="any"
                 min={0}
                 required
+                disabled={isSaving}
                 value={sale_price}
                 onChange={(e) => setSalePrice(Number(e.target.value))}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono disabled:bg-gray-100 disabled:text-gray-400"
               />
             </div>
 
@@ -351,9 +389,10 @@ export default function ProductView() {
                   step="any"
                   min={0}
                   required
+                  disabled={isSaving}
                   value={stock}
                   onChange={(e) => setStock(Number(e.target.value))}
-                  className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono"
+                  className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono disabled:bg-gray-100 disabled:text-gray-400"
                 />
               </div>
             )}
@@ -365,18 +404,27 @@ export default function ProductView() {
                 step="any"
                 min={0}
                 required
+                disabled={isSaving}
                 value={min_stock_alert}
                 onChange={(e) => setMinStockAlert(Number(e.target.value))}
-                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono"
+                className="w-full text-xs p-2.5 bg-white border border-gray-200 focus:outline-none rounded-xl font-mono disabled:bg-gray-100 disabled:text-gray-400"
               />
             </div>
 
             <div className="md:col-span-4 flex items-center justify-end pt-2">
               <button
                 type="submit"
-                className="px-6 py-2 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                disabled={isSaving}
+                className="px-6 py-2 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:bg-orange-400 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
-                {editingId ? 'Modify Premium Flour' : 'Seed Milled Product'}
+                {isSaving ? (
+                  <>
+                    <span className="block h-3.5 w-3.5 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" />
+                    <span>Saving to Database...</span>
+                  </>
+                ) : (
+                  <span>{editingId ? 'Modify Premium Flour' : 'Seed Milled Product'}</span>
+                )}
               </button>
             </div>
           </form>

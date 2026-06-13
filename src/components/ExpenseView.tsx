@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
   Coins, Plus, Search, Trash2, Calendar, Sparkles, AlertCircle, 
-  Lightbulb, Truck, UserCheck, HardHat, Warehouse, Briefcase 
+  Lightbulb, Truck, UserCheck, HardHat, Warehouse, Briefcase,
+  Package, TrendingUp
 } from 'lucide-react';
 import { Expense } from '../types';
 
@@ -22,10 +23,6 @@ export default function ExpenseView() {
 
   const primaryCurrency = currentShop?.currency || 'PKR';
 
-  const sumTotalOutflow = useMemo(() => {
-    return expenses.reduce((sum, e) => sum + e.amount, 0);
-  }, [expenses]);
-
   const filteredExpenses = useMemo(() => {
     return expenses.filter(e => {
       const matchCat = selectedCategory === 'all' || e.category === selectedCategory;
@@ -34,6 +31,14 @@ export default function ExpenseView() {
       return matchCat && matchSearch;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [expenses, selectedCategory, searchTerm]);
+
+  const sumTotalOutflow = useMemo(() => {
+    return filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+  }, [filteredExpenses]);
+
+  const globalTotalOutflow = useMemo(() => {
+    return expenses.reduce((sum, e) => sum + e.amount, 0);
+  }, [expenses]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,6 +63,8 @@ export default function ExpenseView() {
       case 'Transport': return <Truck className="h-4 w-4 text-indigo-650" />;
       case 'Labor': return <UserCheck className="h-4 w-4 text-emerald-600" />;
       case 'Rent': return <Warehouse className="h-4 w-4 text-blue-600" />;
+      case 'Maintenance': return <HardHat className="h-4 w-4 text-orange-600" />;
+      case 'Packaging': return <Package className="h-4 w-4 text-purple-600" />;
       default: return <Briefcase className="h-4 w-4 text-gray-600" />;
     }
   };
@@ -164,19 +171,32 @@ export default function ExpenseView() {
       )}
 
       {/* EXPENSE SUMMARY CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         
         {/* Outflow aggregated stats */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-2xs flex items-center justify-between">
+        <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-2xs flex items-center justify-between col-span-1">
           <div className="space-y-1">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Accumulated operational Drafts</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Filtered Costs</span>
             <div className="text-2xl font-extrabold text-gray-900 font-mono">
               {primaryCurrency} {sumTotalOutflow.toLocaleString()}
             </div>
-            <span className="text-[10px] text-gray-500">Milling outflow aggregated totals.</span>
+            <span className="text-[10px] text-gray-500">Based on active filters.</span>
           </div>
           <div className="h-11 w-11 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center">
             <Coins className="h-5 w-5" />
+          </div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-2xs flex items-center justify-between col-span-1">
+          <div className="space-y-1">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Ledger Drafts</span>
+            <div className="text-2xl font-extrabold text-gray-800 font-mono">
+              {primaryCurrency} {globalTotalOutflow.toLocaleString()}
+            </div>
+            <span className="text-[10px] text-gray-500">Grand total all logs.</span>
+          </div>
+          <div className="h-11 w-11 rounded-xl bg-gray-50 text-gray-600 flex items-center justify-center">
+            <TrendingUp className="h-5 w-5" />
           </div>
         </div>
 
