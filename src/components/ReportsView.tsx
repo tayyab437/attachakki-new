@@ -4,6 +4,7 @@ import {
   FileText, Printer, Eye, Download, TrendingUp, Scale, Package, 
   Coins, Sparkles, AlertCircle 
 } from 'lucide-react';
+import { getPKTodayString, formatPKDate } from '../lib/time';
 
 export default function ReportsView() {
   const { sales, saleItems, expenses, products, customers, currentShop } = useStore();
@@ -13,9 +14,13 @@ export default function ReportsView() {
 
   // 1. Calculations: Daily and Monthly sales metrics
   const reportsData = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getPKTodayString();
 
-    const todaySales = sales.filter(s => s.created_at.startsWith(today));
+    const todaySales = sales.filter(s => {
+      // Convert UTC s.created_at to PK ISO Date for parity
+      const pkDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date(s.created_at));
+      return pkDate === today;
+    });
     const todayRevenue = todaySales.reduce((sum, s) => sum + s.net_amount, 0);
 
     const monthlySales = sales;
@@ -135,7 +140,7 @@ export default function ReportsView() {
 
           <div className="text-right">
             <span className="block text-[10px] text-gray-550 font-semibold uppercase">STATEMENT DATE:</span>
-            <span className="block font-mono text-[10px] text-gray-900 font-bold mt-0.5">{new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+            <span className="block font-mono text-[10px] text-gray-900 font-bold mt-0.5">{formatPKDate(new Date())}</span>
           </div>
         </div>
 

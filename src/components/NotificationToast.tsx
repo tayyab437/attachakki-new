@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { CheckCircle, Info, AlertTriangle, X } from 'lucide-react';
 import { useStore } from '../lib/store';
+import { audioService } from '../lib/audio';
 
 export default function NotificationToast() {
   const { notifications, clearNotification } = useStore();
   const [visibleNotifications, setVisibleNotifications] = useState<any[]>([]);
+  const lastCountRef = useRef(0);
 
   useEffect(() => {
     // Only show unread notifications that were created in the last 10 seconds
@@ -14,6 +16,19 @@ export default function NotificationToast() {
       const created = new Date(n.created_at).getTime();
       return !n.read && (now - created < 10000);
     });
+    
+    // Play sound if we have a NEW notification
+    if (active.length > lastCountRef.current) {
+      const newest = active[active.length - 1];
+      if (newest.type === 'success') {
+        audioService.playSuccess();
+      } else if (newest.type === 'credit_alert' || newest.type === 'low_stock' || newest.type === 'error') {
+        audioService.playError();
+      } else {
+        audioService.playInfo();
+      }
+    }
+    lastCountRef.current = active.length;
     
     setVisibleNotifications(active);
 
@@ -40,11 +55,12 @@ export default function NotificationToast() {
           >
             <div className={`shrink-0 p-2 rounded-xl ${
               n.type === 'success' ? 'bg-emerald-50 text-emerald-600' :
+              n.type === 'error' ? 'bg-red-50 text-red-600' :
               n.type === 'credit_alert' || n.type === 'low_stock' ? 'bg-orange-50 text-orange-600' :
               'bg-blue-50 text-blue-600'
             }`}>
               {n.type === 'success' ? <CheckCircle className="h-5 w-5" /> :
-               n.type === 'credit_alert' || n.type === 'low_stock' ? <AlertTriangle className="h-5 w-5" /> :
+               n.type === 'error' || n.type === 'credit_alert' || n.type === 'low_stock' ? <AlertTriangle className="h-5 w-5" /> :
                <Info className="h-5 w-5" />}
             </div>
             

@@ -1,13 +1,16 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
 import { 
   TrendingUp, ShoppingCart, Loader2, Package, Coins, Flame, Scale, 
-  AlertTriangle, RefreshCw, Bell, Activity, Play, CheckCircle2 
+  AlertTriangle, RefreshCw, Bell, Activity, Play, CheckCircle2, Calendar
 } from 'lucide-react';
+import { getPKTodayStart, getPKTodayString, formatPKTime } from '../lib/time';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   ResponsiveContainer, BarChart, Bar, Legend 
 } from 'recharts';
+
+type TimeFilter = 'today' | 'yesterday' | 'last7days' | 'last30days' | 'custom';
 
 export default function DashboardView() {
   const { 
@@ -15,24 +18,68 @@ export default function DashboardView() {
     currentShop, triggerRealtimeSale, markAllNotificationsRead, clearNotification 
   } = useStore();
 
+  const [filterType, setFilterType] = useState<TimeFilter>('today');
+  const [customDate, setCustomDate] = useState<string>(getPKTodayString());
+
   const primaryCurrency = currentShop?.currency || 'PKR';
 
-  // 1. Calculate executive metrics
+  // Helper to check if a date falls within the selected filter
+  const isInRange = (dateString: string) => {
+    const today = getPKTodayStart();
+    
+    // Parse target date based on Pakistan timezone representation
+    const targetDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date(dateString));
+    const [tYear, tMonth, tDay] = targetDateStr.split('-').map(Number);
+    const targetDateNormalized = new Date(tYear, tMonth - 1, tDay);
+
+    if (filterType === 'today') {
+      return targetDateNormalized.getTime() === today.getTime();
+    }
+    if (filterType === 'yesterday') {
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      return targetDateNormalized.getTime() === yesterday.getTime();
+    }
+    if (filterType === 'last7days') {
+      const sevenDaysAgo = new Date(today);
+      sevenDaysAgo.setDate(today.getDate() - 6);
+      return targetDateNormalized.getTime() >= sevenDaysAgo.getTime() && targetDateNormalized.getTime() <= today.getTime();
+    }
+    if (filterType === 'last30days') {
+      const thirtyDaysAgo = new Date(today);
+      thirtyDaysAgo.setDate(today.getDate() - 29);
+      return targetDateNormalized.getTime() >= thirtyDaysAgo.getTime() && targetDateNormalized.getTime() <= today.getTime();
+    }
+    if (filterType === 'custom') {
+      const selected = new Date(customDate);
+      selected.setHours(0, 0, 0, 0);
+      return targetDateNormalized.getTime() === selected.getTime();
+    }
+    return true;
+  };
+
+  // 1. Calculate executive metrics based on filtered data
   const stats = useMemo(() => {
+    const filteredSales = sales.filter(s => isInRange(s.created_at));
+    const filteredExpenses = expenses.filter(e => isInRange(e.date));
+
     // Total Revenue
-    const totalSales = sales.reduce((sum, s) => sum + s.net_amount, 0);
+    const totalSales = filteredSales.reduce((sum, s) => sum + s.net_amount, 0);
 
     // Cost of Goods Sold (COGS)
-    // We aggregate quantity * cost_price_at_sale
-    const totalCOGS = saleItems.reduce((sum, item) => sum + (item.quantity * item.cost_price_at_sale), 0);
+    // We aggregate quantity * cost_price_at_sale for filtered sales
+    const saleIds = new Set(filteredSales.map(s => s.id));
+    const totalCOGS = saleItems
+      .filter(item => saleIds.has(item.sale_id))
+      .reduce((sum, item) => sum + (item.quantity * item.cost_price_at_sale), 0);
 
     // Total Expenses
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
 
     // Total Profit = Revenue - Product Cost - Expenses
     const netProfit = totalSales - totalCOGS - totalExpenses;
 
-    // Out of Stock / Low Stock count
+    // Out of Stock / Low Stock count (Inventory status is current/global)
     const lowStockAlertCount = products.filter(p => p.stock <= p.min_stock_alert).length;
 
     // Inventory Valuation Worth (Cost Worth & Retail Worth)
@@ -46,18 +93,28 @@ export default function DashboardView() {
       netProfit,
       lowStockAlertCount,
       inventoryCostWorth,
-      inventoryRetailWorth
+      inventoryRetailWorth,
+      salesCount: filteredSales.length,
+      expensesCount: filteredExpenses.length
     };
-  }, [products, sales, saleItems, expenses]);
+  }, [products, sales, saleItems, expenses, filterType, customDate]);
 
   // 2. Generate detailed multi-period chart data for Recharts
   const chartData = useMemo(() => {
-    // Group sales and expenses by date (last 7 days)
+    // Current behavior: Show the context of the last 7 days always, 
+    // or adjust based on selection? 
+    // Let's keep a 7-day window relative to the selected date if custom, 
+    // or just standard 7 days.
+    
+    const rangeEndDate = (filterType === 'custom') ? new Date(customDate) : new Date();
+    rangeEndDate.setHours(0, 0, 0, 0);
+
     const days: { [key: string]: { date: string; revenue: number; cost: number; expense: number; profit: number } } = {};
     
-    // Fill in last 7 days logically
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
+    // Fill in days ending at rangeEndDate (30 days for last30days, otherwise 7)
+    const dayCount = filterType === 'last30days' ? 30 : 7;
+    for (let i = dayCount - 1; i >= 0; i--) {
+      const d = new Date(rangeEndDate);
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
       const displayLabel = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -69,7 +126,6 @@ export default function DashboardView() {
       const dateKey = s.created_at.split('T')[0];
       if (days[dateKey]) {
         days[dateKey].revenue += s.net_amount;
-        // Estimate cost for this sale
         const sItems = saleItems.filter(item => item.sale_id === s.id);
         const sCost = sItems.reduce((sum, sI) => sum + (sI.quantity * sI.cost_price_at_sale), 0);
         days[dateKey].cost += sCost;
@@ -78,20 +134,18 @@ export default function DashboardView() {
 
     // Populate Expenses
     expenses.forEach(e => {
-      // e.date is "YYYY-MM-DD" style
       const dateKey = e.date;
       if (days[dateKey]) {
         days[dateKey].expense += e.amount;
       }
     });
 
-    // Calculate Net Profit sequence: Profit = Sales - Cost - Exp
     return Object.keys(days).map(key => {
       const day = days[key];
       day.profit = day.revenue - day.cost - day.expense;
       return day;
     });
-  }, [sales, saleItems, expenses]);
+  }, [sales, saleItems, expenses, filterType, customDate]);
 
   // Unread notifications filtering
   const unreadAlerts = useMemo(() => {
@@ -101,22 +155,68 @@ export default function DashboardView() {
   return (
     <div className="space-y-6" id="dashboard-view-panel">
       
-      {/* REAL-TIME ACTIVE STATE HEADER */}
-      <div className="bg-gray-900 text-white rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 border border-gray-800" id="live-banner">
-        <div className="flex items-start gap-3">
-          <div className="p-3 bg-orange-600/20 text-orange-400 rounded-xl shrink-0 mt-0.5 animate-pulse">
-            <Activity className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-gray-100">Live Multi-Tenant Synchronization Active</span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/25">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Raw Grain Realtime Network
-              </span>
+      {/* REAL-TIME ACTIVE STATE HEADER & FILTERS */}
+      <div className="flex flex-col gap-4">
+        <div className="bg-gray-900 text-white rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 border border-gray-800" id="live-banner">
+          <div className="flex items-start gap-3">
+            <div className="p-3 bg-orange-600/20 text-orange-400 rounded-xl shrink-0 mt-0.5 animate-pulse">
+              <Activity className="h-5 w-5" />
             </div>
-            <p className="text-gray-400 text-xs mt-0.5">
-              Your dashboard aggregates authentic active metrics instantly from your Supabase nodes as transaction changes occur.
-            </p>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-gray-100">Live Multi-Tenant Synchronization Active</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/25">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Raw Grain Realtime Network
+                </span>
+              </div>
+              <p className="text-gray-400 text-xs mt-0.5">
+                Your dashboard aggregates authentic active metrics instantly from your Supabase nodes as transaction changes occur.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* TIME HORIZON FILTER BAR */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-3 rounded-2xl border border-gray-150 shadow-3xs" id="dashboard-filters">
+          <div className="flex items-center gap-2 p-1 bg-gray-50 rounded-xl border border-gray-100">
+            {(['today', 'yesterday', 'last7days', 'last30days', 'custom'] as TimeFilter[]).map((type) => (
+              <button
+                key={type}
+                onClick={() => setFilterType(type)}
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  filterType === type 
+                    ? 'bg-white text-gray-900 shadow-sm border border-gray-200' 
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {type === 'today' ? 'Today' : 
+                 type === 'yesterday' ? 'Yesterday' : 
+                 type === 'last7days' ? 'Last 7 Days' : 
+                 type === 'last30days' ? 'Last 30 Days' : 'Pick Date'}
+              </button>
+            ))}
+          </div>
+
+          {filterType === 'custom' && (
+            <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-2 duration-300">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl">
+                <Calendar className="h-3.5 w-3.5 text-gray-400" />
+                <input 
+                  type="date" 
+                  value={customDate}
+                  onChange={(e) => setCustomDate(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-gray-900 outline-none cursor-pointer"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest hidden lg:block">
+            {filterType === 'today' ? 'Showing current session logs' : 
+             filterType === 'yesterday' ? 'Showing previous day audit' : 
+             filterType === 'last7days' ? '7-Day Rolling Performance' : 
+             filterType === 'last30days' ? '30-Day Performance Audit' :
+             `Auditing records for ${new Date(customDate).toLocaleDateString()}`}
           </div>
         </div>
       </div>
@@ -191,10 +291,17 @@ export default function DashboardView() {
         <div className="bg-white p-5 rounded-2xl border border-gray-150 shadow-2xs lg:col-span-2 space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-bold text-gray-900">Weekly P&L & Profit Flow</h3>
-              <p className="text-[11px] text-gray-500">Comparing gross grain revenue against operation expenditures and product cost</p>
+              <h3 className="text-sm font-bold text-gray-900">Profit Flow & Performance</h3>
+              <p className="text-[11px] text-gray-500">
+                {filterType === 'custom' 
+                  ? `7-day performance context surrounding ${new Date(customDate).toLocaleDateString()}`
+                  : 'Comparing gross revenue against total expenditures and inventory costs'}
+              </p>
             </div>
-            <span className="px-2 py-1 bg-gray-50 text-gray-700 text-[10px] font-bold border border-gray-200 rounded-lg">Last 7 Days</span>
+            <span className="px-2 py-1 bg-gray-50 text-gray-700 text-[10px] font-bold border border-gray-200 rounded-lg">
+              {filterType === 'last7days' ? 'Trailing 7 Days' : 
+               filterType === 'last30days' ? 'Trailing 30 Days' : 'Trend Analysis'}
+            </span>
           </div>
 
           <div className="h-72 w-full pt-2">
@@ -328,7 +435,7 @@ export default function DashboardView() {
                 <div key={log.id} className="text-xs flex flex-col gap-0.5 border-l-2 border-gray-200 pl-3">
                   <div className="flex items-center justify-between text-[10px]">
                     <span className="font-bold text-gray-800 uppercase tracking-wide">{log.action}</span>
-                    <span className="text-gray-400">{new Date(log.created_at).toLocaleTimeString()}</span>
+                    <span className="text-gray-400">{formatPKTime(log.created_at)}</span>
                   </div>
                   <p className="text-gray-600 text-[11px] leading-relaxed">{log.details}</p>
                   <span className="text-[9px] text-gray-400 font-mono">By: {log.user_email}</span>

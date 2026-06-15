@@ -4,6 +4,7 @@ import {
   User, Plus, Search, HelpCircle, ArrowUpRight, ArrowDownRight, 
   Coins, Sparkles, Phone, Mail, FileText, CheckCircle2 
 } from 'lucide-react';
+import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function CustomerLedgerView() {
   const { customers, customerTransactions, addCustomer, receiveCustomerPayment, currentShop } = useStore();
@@ -378,8 +379,8 @@ export default function CustomerLedgerView() {
                           return (
                             <tr key={idx} className="bg-white border hover:bg-gray-50 transition-colors group">
                               <td className="px-3 py-2 border-y border-l rounded-l-xl border-gray-100 font-mono text-[10px] text-gray-500">
-                                {new Date(tx.created_at).toLocaleDateString()}
-                                <div className="text-[9px] opacity-70">{new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                                {formatPKDate(tx.created_at)}
+                                <div className="text-[9px] opacity-70">{formatPKTime(tx.created_at)}</div>
                               </td>
                               <td className="px-3 py-2 border-y border-gray-100">
                                 <div className="flex items-center gap-2">

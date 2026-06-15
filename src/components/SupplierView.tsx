@@ -4,6 +4,7 @@ import {
   Building2, Plus, Search, Truck, ArrowUpRight, ArrowDownRight, 
   Coins, Sparkles, Phone, ShieldAlert 
 } from 'lucide-react';
+import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function SupplierView() {
   const { suppliers, supplierTransactions, addSupplier, makeSupplierPayment, currentShop } = useStore();
@@ -327,7 +328,7 @@ export default function SupplierView() {
                             <div>
                               <span className="block font-semibold text-gray-900">{tx.description}</span>
                               <span className="block text-[9px] text-gray-400 mt-0.5">
-                                {new Date(tx.created_at).toLocaleDateString()} {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {formatPKDate(tx.created_at)} {formatPKTime(tx.created_at)}
                                 {tx.payment_method && ` | Handed via ${tx.payment_method}`}
                               </span>
                             </div>

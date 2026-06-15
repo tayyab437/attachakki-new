@@ -4,6 +4,8 @@ import {
   Store, CheckCircle, Palette, LogOut, Database, CloudLightning, Download, Upload, Info, RefreshCw, AlertTriangle
 } from 'lucide-react';
 import { config, getMaskedUrl, getMaskedKey } from '../lib/supabase';
+import { getPKTodayString } from '../lib/time';
+
 
 export default function SettingsView() {
   const { currentShop, settings, updateShopProfile, updateSettings, logout } = useStore();
@@ -85,7 +87,7 @@ export default function SettingsView() {
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData, null, 2));
       const downloadAnchor = document.createElement('a');
       downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `atta_mill_local_backup_${new Date().toISOString().split('T')[0]}.json`);
+      downloadAnchor.setAttribute("download", `atta_mill_local_backup_${getPKTodayString()}.json`);
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();

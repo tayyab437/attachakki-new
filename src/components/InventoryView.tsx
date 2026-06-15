@@ -4,6 +4,7 @@ import {
   Package, Search, Activity, Trash, AlertTriangle, ArrowUpRight, 
   ArrowDownRight, Shuffle, Plus, Eye, User 
 } from 'lucide-react';
+import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function InventoryView() {
   const { products, inventoryLogs, adjustInventory, currentShop } = useStore();
@@ -210,7 +211,7 @@ export default function InventoryView() {
                         <span className={`block font-extrabold font-mono text-sm ${isAdd ? 'text-emerald-700' : 'text-red-700'}`}>
                           {isAdd ? '+' : '-'}{log.quantity} {log.unit}
                         </span>
-                        <span className="block text-[9px] text-gray-400 mt-1">{new Date(log.created_at).toLocaleDateString()} {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="block text-[9px] text-gray-400 mt-1">{formatPKDate(log.created_at)} {formatPKTime(log.created_at)}</span>
                       </div>
                     </div>
                   );

@@ -30,12 +30,13 @@ export interface Profile {
   password?: string;
 }
 
-export interface product_categories {
+export interface ProductCategory {
   id: string;
   shop_id: string;
   name: string;
   description: string | null;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Product {
@@ -52,6 +53,7 @@ export interface Product {
   image_url: string | null;
   created_at: string;
   updated_at: string;
+  pending_sync?: boolean;
 }
 
 export interface InventoryLog {
@@ -64,6 +66,7 @@ export interface InventoryLog {
   reason: string;
   created_by: string;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Customer {
@@ -74,6 +77,7 @@ export interface Customer {
   email: string | null;
   balance: number; // positive means they owe money (credit), negative means they pre-paid/advance
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface CustomerTransaction {
@@ -86,6 +90,7 @@ export interface CustomerTransaction {
   description: string;
   payment_method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa' | null;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Supplier {
@@ -96,6 +101,7 @@ export interface Supplier {
   company: string | null;
   balance: number; // positive = we owe them
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface SupplierTransaction {
@@ -107,6 +113,7 @@ export interface SupplierTransaction {
   description: string;
   payment_method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa' | null;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Sale {
@@ -123,6 +130,7 @@ export interface Sale {
   payment_status: 'paid' | 'partially_paid' | 'unpaid';
   created_by: string;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface SaleItem {
@@ -136,6 +144,7 @@ export interface SaleItem {
   unit_price: number;
   cost_price_at_sale: number; // for tracking precise margins
   total: number;
+  pending_sync?: boolean;
 }
 
 export interface Invoice {
@@ -146,6 +155,7 @@ export interface Invoice {
   due_date: string | null;
   notes: string | null;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Expense {
@@ -157,6 +167,7 @@ export interface Expense {
   date: string;
   created_by: string;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface Notification {
@@ -164,9 +175,10 @@ export interface Notification {
   shop_id: string;
   title: string;
   message: string;
-  type: 'info' | 'low_stock' | 'credit_alert' | 'success';
+  type: 'info' | 'low_stock' | 'credit_alert' | 'success' | 'error';
   read: boolean;
   created_at: string;
+  pending_sync?: boolean;
 }
 
 export interface ActivityLog {
@@ -176,4 +188,5 @@ export interface ActivityLog {
   action: string;
   details: string;
   created_at: string;
+  pending_sync?: boolean;
 }

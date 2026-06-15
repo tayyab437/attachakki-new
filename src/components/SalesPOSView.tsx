@@ -5,9 +5,11 @@ import {
   Tag, Loader2, Sparkles, Printer, CheckCircle, FileText, X,
   ChevronDown, ChevronUp, SlidersHorizontal, LayoutList
 } from 'lucide-react';
+import { formatPKDate, formatPKTime } from '../lib/time';
+import { audioService } from '../lib/audio';
 
 export default function SalesPOSView() {
-  const { products, customers, createSale, currentShop, sales, invoices, saleItems } = useStore();
+  const { products, customers, createSale, currentShop, sales, invoices, saleItems, categories } = useStore();
 
   // Search products
   const [productSearch, setProductSearch] = useState('');
@@ -44,10 +46,59 @@ export default function SalesPOSView() {
   const primaryCurrency = currentShop?.currency || 'PKR';
   const taxRate = currentShop?.tax_rate ?? 0;
 
+  // Helper to extract weight from unit for sorting and coloring
+  const getWeight = (unit: string) => {
+    const match = unit.match(/(\d+)/);
+    if (match) return parseInt(match[1], 10);
+    if (unit.toUpperCase().includes('KG')) return 1;
+    return 999;
+  };
+
+  const getWeightLabel = (unit: string) => {
+    const match = unit.match(/(\d+)/);
+    if (match) return match[1];
+    if (unit.toUpperCase().includes('KG')) return 'KG';
+    return '';
+  };
+
+  const getWeightColor = (unit: string) => {
+    const w = getWeight(unit);
+    if (w === 10) return 'bg-blue-50/50 border-blue-200 text-blue-900';
+    if (w === 15) return 'bg-emerald-50/50 border-emerald-200 text-emerald-900';
+    if (w === 20) return 'bg-purple-50/50 border-purple-200 text-purple-900';
+    if (w === 40 || w === 80) return 'bg-rose-50/50 border-rose-200 text-rose-900';
+    return 'bg-white border-gray-150 text-gray-900';
+  };
+
+  const getBadgeColor = (unit: string) => {
+    const w = getWeight(unit);
+    if (w === 10) return 'bg-blue-600 text-white';
+    if (w === 15) return 'bg-emerald-600 text-white';
+    if (w === 20) return 'bg-purple-600 text-white';
+    if (w === 40 || w === 80) return 'bg-rose-600 text-white';
+    return 'bg-gray-500 text-white';
+  };
+
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+
   // Search filtered products (only showing products in stock)
   const availableProducts = useMemo(() => {
-    return products.filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase()));
-  }, [products, productSearch]);
+    let filtered = [...products];
+    
+    if (selectedCategory !== 'All') {
+      filtered = filtered.filter(p => p.category_id === selectedCategory);
+    }
+
+    return filtered
+      .filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase()))
+      .sort((a, b) => getWeight(a.unit) - getWeight(b.unit));
+  }, [products, productSearch, selectedCategory]);
+
+  const getStockStatusColor = (stock: number, min: number) => {
+    if (stock <= 0) return 'bg-gray-300';
+    if (stock <= min) return 'bg-amber-500';
+    return 'bg-emerald-500';
+  };
 
   const addToCart = (productId: string) => {
     const prod = products.find(p => p.id === productId);
@@ -68,6 +119,8 @@ export default function SalesPOSView() {
       return [...prev, { product_id: productId, quantity: 1 }];
     });
 
+    audioService.playInfo();
+
     // Auto-focus the last updated product for quick custom edits
     setExpandedId(productId);
 
@@ -78,6 +131,21 @@ export default function SalesPOSView() {
       return next;
     });
   };
+
+  // Keyboard shortcut for search (Press '/' to focus)
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '/' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        const searchInput = document.querySelector<HTMLInputElement>('input[placeholder="Search flour tags..."]');
+        if (searchInput) {
+          searchInput.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const formatQuantity = (qty: number) => {
     return Number(qty).toLocaleString(undefined, {
@@ -159,37 +227,54 @@ export default function SalesPOSView() {
     e.preventDefault();
     if (cart.length === 0) return;
 
-    const payloadItems = cart.map(item => {
-      const prod = products.find(p => p.id === item.product_id)!;
-      return {
-        product_id: item.product_id,
-        quantity: item.quantity,
-        sale_price: item.custom_unit_price ?? prod.sale_price
-      };
-    });
+    try {
+      const payloadItems = cart.map(item => {
+        const prod = products.find(p => p.id === item.product_id)!;
+        return {
+          product_id: item.product_id,
+          quantity: item.quantity,
+          sale_price: item.custom_unit_price ?? prod.sale_price
+        };
+      });
 
-    const activePaid = customerId ? paidAmount : cartTotals.grandTotal;
+      const activePaid = customerId ? paidAmount : cartTotals.grandTotal;
 
-    const createdId = await createSale({
-      customer_id: customerId || null,
-      customer_name_manual: customerId ? null : (walkInName || 'Walk-in Customer'),
-      items: payloadItems,
-      discount: discount || 0,
-      paid_amount: Number(activePaid),
-      payment_method: paymentMethod
-    });
+      const createdId = await createSale({
+        customer_id: customerId || null,
+        customer_name_manual: customerId ? null : (walkInName || 'Walk-in Customer'),
+        items: payloadItems,
+        discount: discount || 0,
+        paid_amount: Number(activePaid),
+        payment_method: paymentMethod
+      });
 
-    if (createdId) {
-      setCompletedSaleId(createdId);
-      // Reset POS Cart
-      setCart([]);
-      setAmountInputs({});
-      setPriceInputs({});
-      setCustomerId('');
-      setWalkInName('');
-      setDiscount(0);
-      setPaidAmount(0);
-      setExpandedId(null);
+      if (createdId) {
+        setCompletedSaleId(createdId);
+        // Reset POS Cart
+        setCart([]);
+        setAmountInputs({});
+        setPriceInputs({});
+        setCustomerId('');
+        setWalkInName('');
+        setDiscount(0);
+        setPaidAmount(0);
+        setExpandedId(null);
+      } else {
+        useStore.getState().addNotification({
+          shop_id: currentShop?.id || 'sys',
+          title: 'Checkout Failed',
+          message: 'Could not register the sale. Please check inventory or connection.',
+          type: 'error'
+        });
+      }
+    } catch (err: any) {
+      console.error('POS Checkout Error:', err);
+      useStore.getState().addNotification({
+        shop_id: currentShop?.id || 'sys',
+        title: 'System Error',
+        message: err.message || 'An unexpected error occurred during checkout.',
+        type: 'error'
+      });
     }
   };
 
@@ -223,42 +308,91 @@ export default function SalesPOSView() {
           </div>
 
           {/* Product quick-search bar */}
-          <div className="relative">
+          <div className="relative flex items-center">
             <input
               type="text"
               placeholder="Search flour tags..."
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
-              className="pl-3 pr-3 py-1.5 text-xs bg-white text-gray-800 border border-gray-200 focus:outline-none rounded-xl"
+              className="pl-3 pr-8 py-1.5 text-xs bg-white text-gray-800 border border-gray-200 focus:outline-none focus:border-orange-500 rounded-xl transition-all"
             />
+            {productSearch && (
+              <button 
+                onClick={() => setProductSearch('')}
+                className="absolute right-2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
+        </div>
+
+        {/* Category Filtering Tabs */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide no-scrollbar">
+          <button
+            onClick={() => setSelectedCategory('All')}
+            className={`px-3 py-1.5 rounded-full text-[10px] font-bold transition-all whitespace-nowrap ${selectedCategory === 'All' ? 'bg-orange-600 text-white shadow-sm' : 'bg-white border border-gray-150 text-gray-500 hover:bg-gray-50'}`}
+          >
+            All Products
+          </button>
+          {categories.map(cat => (
+            <button
+              key={cat.id}
+              onClick={() => setSelectedCategory(cat.id)}
+              className={`px-3 py-1.5 rounded-full text-[10px] font-bold transition-all whitespace-nowrap ${selectedCategory === cat.id ? 'bg-orange-600 text-white shadow-sm' : 'bg-white border border-gray-150 text-gray-500 hover:bg-gray-50'}`}
+            >
+              {cat.name}
+            </button>
+          ))}
         </div>
 
         {/* Quick click product grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[500px] overflow-y-auto pr-1">
           {availableProducts.map(prod => {
             const isOutOfStock = prod.stock <= 0;
+            const weightColorClasses = isOutOfStock ? 'opacity-50 cursor-not-allowed border-gray-200 bg-gray-50' : `${getWeightColor(prod.unit)} cursor-pointer`;
+            
             return (
               <button
                 key={prod.id}
                 onClick={() => !isOutOfStock && addToCart(prod.id)}
                 disabled={isOutOfStock}
-                className={`p-4 bg-white border rounded-2xl text-left hover:border-orange-500 hover:shadow-2xs transition-all flex flex-col justify-between space-y-3 relative group ${isOutOfStock ? 'opacity-50 cursor-not-allowed border-gray-200 bg-gray-50' : 'border-gray-150 cursor-pointer'}`}
+                className={`p-4 border rounded-2xl text-left hover:border-orange-500 hover:shadow-2xs transition-all flex flex-col justify-between space-y-3 relative group ${weightColorClasses}`}
               >
+                {/* Weight/Size Badge */}
+                {getWeightLabel(prod.unit) && (
+                  <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-lg text-[10px] font-black shadow-sm z-10 ${getBadgeColor(prod.unit)}`}>
+                    {getWeightLabel(prod.unit)}
+                  </div>
+                )}
+                
                 <div className="space-y-1">
                   <span className="block font-extrabold text-gray-950 text-xs leading-snug group-hover:text-orange-600 transition-colors">{prod.name}</span>
                   <span className="block text-[10px] text-gray-400 font-mono">CODE: {prod.sku}</span>
                 </div>
 
                 <div className="flex items-center justify-between pt-1">
-                  <span className="font-bold font-mono text-gray-900 text-sm">
-                    {primaryCurrency} {(prod.sale_price || 0).toLocaleString()} <span className="text-[10px] text-gray-500 font-normal">/ {prod.unit}</span>
-                  </span>
+                  <div className="flex items-center gap-1.5 transition-transform group-hover:scale-105 duration-200">
+                    <Tag className="h-3 w-3 text-orange-500" />
+                    <span className="font-bold font-mono text-gray-900 text-sm">
+                      {primaryCurrency} {(prod.sale_price || 0).toLocaleString()} <span className="text-[10px] text-gray-500 font-normal">/ {prod.unit}</span>
+                    </span>
+                  </div>
 
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${prod.stock <= prod.min_stock_alert ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-gray-100 text-gray-700'}`}>
                     {isOutOfStock ? 'Out Of Stock' : `${Number(prod.stock).toFixed(2)} ${prod.unit}`}
                   </span>
                 </div>
+
+                {/* Stock Health Bar */}
+                {!isOutOfStock && (
+                  <div className="w-full bg-gray-200/50 h-1.5 rounded-full mt-2 overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-500 ${getStockStatusColor(prod.stock, prod.min_stock_alert)}`} 
+                      style={{ width: `${Math.min(100, (prod.stock / (prod.min_stock_alert * 5)) * 100)}%` }}
+                    />
+                  </div>
+                )}
               </button>
             );
           })}
@@ -314,7 +448,7 @@ export default function SalesPOSView() {
                   <div className="flex justify-between text-[10px] pt-1">
                     <span>Date Time:</span>
                     <span>
-                      {new Date(completedInvoiceDetails.sale.created_at).toLocaleDateString()} {new Date(completedInvoiceDetails.sale.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {formatPKDate(completedInvoiceDetails.sale.created_at)} {formatPKTime(completedInvoiceDetails.sale.created_at)}
                     </span>
                   </div>
                 </div>
@@ -400,9 +534,20 @@ export default function SalesPOSView() {
                   <span>Active Sales Cart</span>
                 </div>
                 
-                {/* Mode toggle switcher */}
-                <button
-                  type="button"
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCart([])}
+                    className="px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight bg-white border border-red-200 text-red-600 hover:bg-red-50 transition-all flex items-center gap-1 cursor-pointer"
+                    title="Clear everything from cart"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>Clear Cart</span>
+                  </button>
+
+                  {/* Mode toggle switcher */}
+                  <button
+                    type="button"
                   onClick={() => {
                     const next = !isCompactMode;
                     setIsCompactMode(next);
@@ -427,7 +572,8 @@ export default function SalesPOSView() {
                     </>
                   )}
                 </button>
-              </h3>
+              </div>
+            </h3>
                {/* Cart Table */}
               <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
                 {cart.length === 0 ? (

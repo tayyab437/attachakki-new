@@ -5,7 +5,7 @@ import {
   Lightbulb, Truck, UserCheck, HardHat, Warehouse, Briefcase,
   Package, TrendingUp
 } from 'lucide-react';
-import { Expense } from '../types';
+import { getPKTodayString, formatPKDate } from '../lib/time';
 
 export default function ExpenseView() {
   const { expenses, addExpense, deleteExpense, currentShop } = useStore();
@@ -15,7 +15,7 @@ export default function ExpenseView() {
   const [category, setCategory] = useState<'Electricity' | 'Transport' | 'Labor' | 'Rent' | 'Packaging' | 'Maintenance' | 'Other'>('Electricity');
   const [amount, setAmount] = useState<number>(1000);
   const [description, setDescription] = useState('');
-  const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState<string>(getPKTodayString());
 
   // Filters
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -269,7 +269,7 @@ export default function ExpenseView() {
                       "{exp.description}"
                     </td>
                     <td className="px-5 py-3.5 font-mono text-gray-500 font-medium">
-                      {new Date(exp.date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                      {formatPKDate(exp.date)}
                     </td>
                     <td className="px-5 py-3.5 text-right font-bold text-red-700 font-mono text-xs">
                       {exp.amount.toLocaleString()}

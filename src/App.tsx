@@ -17,6 +17,7 @@ import {
   Building2, Home, ShoppingCart, Package, Activity, Users, Truck, 
   Coins, FileText, Settings, ShieldAlert, LogOut, ChevronRight, UserCog, Sparkles, PanelLeftClose, PanelLeftOpen, RefreshCw
 } from 'lucide-react';
+import { formatPKTime, formatPKDate } from './lib/time';
 
 export default function App() {
   const { 
@@ -33,6 +34,18 @@ export default function App() {
   });
 
   const activeTheme = settings?.theme || 'light';
+
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const pakistanTime = formatPKTime(currentTime);
+  const pakistanDate = formatPKDate(currentTime);
 
   useEffect(() => {
     localStorage.setItem('last_active_tab', activeTab);
@@ -206,6 +219,19 @@ export default function App() {
           {/* RIGHT: LIVE PROFILE, INTERACTIVE ROLE SELECTOR */}
           <div className="flex items-center gap-4">
             
+            {/* Pakistan Local Time (GMT+5) */}
+            <div className="hidden md:flex items-center gap-3 px-3.5 py-1.5 bg-gray-50 border border-gray-150 rounded-xl shadow-3xs" id="pk-time-display">
+              <div className="text-right">
+                <span className="block text-[9px] font-black text-gray-400 uppercase tracking-tighter leading-none mb-0.5">App Time (PK)</span>
+                <span className="block text-[11px] font-black text-gray-900 tabular-nums leading-none tracking-tight">{pakistanTime}</span>
+              </div>
+              <div className="h-6 w-[1px] bg-gray-200" />
+              <div className="text-left">
+                <span className="block text-[9px] font-bold text-orange-600 uppercase tracking-tighter leading-none mb-0.5">GMT+5</span>
+                <span className="block text-[10px] font-bold text-gray-500 leading-none tracking-tighter">{pakistanDate}</span>
+              </div>
+            </div>
+
             {/* Dynamic Connectivity Hub Pill */}
             <div className={`p-1 pl-1.5 pr-2.5 rounded-full border text-[10px] sm:text-xs font-bold flex items-center gap-1.5 transition-all duration-300 ${
               connectionState === 'online' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :

@@ -8,7 +8,7 @@ import { localDB, supabase as rawSupabase, config, initSupabase } from './supaba
 import { 
   Shop, Profile, Product, InventoryLog, Customer, CustomerTransaction, 
   Supplier, SupplierTransaction, Sale, SaleItem, Invoice, Expense, 
-  Notification, ActivityLog, UserRole 
+  Notification, ActivityLog, UserRole, ProductCategory
 } from '../types';
 
 const formatErr = (err: any): string => {
@@ -115,6 +115,7 @@ interface AppStore {
   updateSettings: (updatedFields: any) => Promise<void>;
   updateShopProfile: (data: Partial<Shop>) => Promise<void>;
   syncLocalToCloud: () => Promise<void>;
+  addNotification: (notification: Omit<Notification, 'id' | 'read' | 'created_at'>) => void;
 
   // Super Admin controls
   toggleShopStatus: (shopId: string) => Promise<void>;
@@ -381,7 +382,6 @@ export const useStore = create<AppStore>((set, get) => ({
         console.log('[AUTO-SYNC] Stable internet detected. Automatically compiling and syncing live entries...');
         set({ connectionState: 'syncing' });
         await get().syncLocalToCloud();
-        set({ connectionState: 'online' });
       }
     } catch (err) {
       console.warn('[CONNECTIVITY CHECK] Supabase server is unreachable or offline:', err);
@@ -404,8 +404,12 @@ export const useStore = create<AppStore>((set, get) => ({
         // Automatic universal migration sync: guarantee that sandbox offline data gets pushed!
         const localProfilesCheck = localStorage.getItem('flour_db_profiles');
         const hasSyncedCheck = sessionStorage.getItem('has_auto_synced');
+        
+        // If we have local data but it's just the default demo data, we might want to clear it 
+        // once we successfully know who the live user is. 
+        // For now, prioritize syncing if there's anything valid.
         if (localProfilesCheck && !hasSyncedCheck) {
-            await get().syncLocalToCloud(); // Push missing local sandbox configs to Universal Cloud DB
+            await get().syncLocalToCloud(); 
             sessionStorage.setItem('has_auto_synced', 'true');
         }
 
@@ -562,6 +566,34 @@ export const useStore = create<AppStore>((set, get) => ({
     const shop = get().currentShop;
     if (!shop) return;
 
+    // --- PHASE 1: LOAD FROM LOCAL CACHE IMMEDIATELY ---
+    const filterByShop = <T extends { shop_id: string }>(tbl: string): T[] => {
+      const items = localDB.getCollection<T>(tbl);
+      return items.filter(item => item.shop_id === shop.id);
+    };
+
+    const localSettingsRaw = localStorage.getItem('flour_db_settings');
+    const localSettings = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
+
+    set({
+      products: filterByShop<Product>('products'),
+      categories: filterByShop<any>('categories'),
+      inventoryLogs: filterByShop<InventoryLog>('inventory_logs'),
+      customers: filterByShop<Customer>('customers'),
+      customerTransactions: filterByShop<CustomerTransaction>('customer_transactions'),
+      suppliers: filterByShop<Supplier>('suppliers'),
+      supplierTransactions: filterByShop<SupplierTransaction>('supplier_transactions'),
+      sales: filterByShop<Sale>('sales'),
+      saleItems: filterByShop<SaleItem>('sale_items'),
+      invoices: filterByShop<Invoice>('invoices'),
+      expenses: filterByShop<Expense>('expenses'),
+      notifications: filterByShop<Notification>('notifications'),
+      activityLogs: filterByShop<ActivityLog>('activity_logs'),
+      settings: localSettings,
+      appMode: config.isOnline ? 'live_supabase' : 'demo'
+    });
+
+    // --- PHASE 2: FETCH FROM LIVE DB IF ONLINE ---
     if (config.isOnline && supabase) {
       // Fetch datasets in parallel from Live Supabase
       try {
@@ -573,13 +605,13 @@ export const useStore = create<AppStore>((set, get) => ({
               .select('*')
               .eq('shop_id', shop.id);
             if (error) {
-              console.warn(`Live DB error fetching ${tableName}, falling back to LocalDB:`, error);
-              return localDB.getCollection<any>(tableName) || [];
+              console.warn(`Live DB error fetching ${tableName}:`, error);
+              return null; // Return null to signify fetch failure (keep local)
             }
             return data || [];
           } catch (e) {
-            console.warn(`Exception fetching ${tableName} from Live DB, falling back to LocalDB:`, e);
-            return localDB.getCollection<any>(tableName) || [];
+            console.warn(`Exception fetching ${tableName} from Live DB:`, e);
+            return null;
           }
         };
 
@@ -613,10 +645,7 @@ export const useStore = create<AppStore>((set, get) => ({
           fetchTable('activity_logs')
         ]);
 
-        let settingsObj = {};
-        const localSettingsRaw = localStorage.getItem('flour_db_settings');
-        const localSettings = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
-
+        let settingsObj = localSettings;
         try {
           const { data: settingsData, error: setErr } = await supabase
             .from('settings')
@@ -626,60 +655,71 @@ export const useStore = create<AppStore>((set, get) => ({
             
           if (settingsData && !setErr) {
             settingsObj = { ...localSettings, ...settingsData };
-          } else {
-            settingsObj = localSettings;
           }
         } catch (err) {
-          console.warn('Supabase settings table could not be fetched, falling back to local settings:', err);
-          settingsObj = localSettings;
+          console.warn('Supabase settings table could not be fetched:', err);
         }
 
-        set({
-          products: products || [],
-          categories: categories || [],
-          inventoryLogs: inventoryLogs || [],
-          customers: customers || [],
-          customerTransactions: customerTransactions || [],
-          suppliers: suppliers || [],
-          supplierTransactions: supplierTransactions || [],
-          sales: sales || [],
-          saleItems: saleItems || [],
-          invoices: invoices || [],
-          expenses: expenses || [],
-          notifications: notifications || [],
-          activityLogs: activityLogs || [],
-          settings: settingsObj,
-          appMode: 'live_supabase'
-        });
+        // Only update state if fetch was successful (not null)
+        // --- MERGE CLOUD DATA WITH PENDING LOCAL CHANGES ---
+        const mergeLocal = <T extends { id: string; shop_id: string; pending_sync?: boolean }>(cloud: T[] | null, localKey: string): T[] | null => {
+          if (cloud === null) return null;
+          const localItems = localDB.getCollection<T>(localKey);
+          const pendingItems = localItems.filter(i => i.pending_sync && i.shop_id === shop.id);
+          const merged = [...cloud, ...pendingItems.filter(p => !cloud.some(c => c.id === p.id))];
+          
+          // Update local cache for this shop specifically
+          const otherShopItems = localItems.filter(i => i.shop_id !== shop.id);
+          localDB.saveCollection(localKey, [...otherShopItems, ...merged]);
+          
+          return merged;
+        };
+
+        const newState: Partial<AppStore> = { settings: settingsObj, appMode: 'live_supabase' };
+        
+        const products_M = mergeLocal<Product>(products, 'products');
+        if (products_M) newState.products = products_M;
+        
+        const categories_M = mergeLocal<ProductCategory>(categories, 'categories');
+        if (categories_M) newState.categories = categories_M;
+
+        const invLogs_M = mergeLocal<InventoryLog>(inventoryLogs, 'inventory_logs');
+        if (invLogs_M) newState.inventoryLogs = invLogs_M;
+
+        const customers_M = mergeLocal<Customer>(customers, 'customers');
+        if (customers_M) newState.customers = customers_M;
+
+        const custTrans_M = mergeLocal<CustomerTransaction>(customerTransactions, 'customer_transactions');
+        if (custTrans_M) newState.customerTransactions = custTrans_M;
+
+        const suppliers_M = mergeLocal<Supplier>(suppliers, 'suppliers');
+        if (suppliers_M) newState.suppliers = suppliers_M;
+
+        const supTrans_M = mergeLocal<SupplierTransaction>(supplierTransactions, 'supplier_transactions');
+        if (supTrans_M) newState.supplierTransactions = supTrans_M;
+
+        const sales_M = mergeLocal<Sale>(sales, 'sales');
+        if (sales_M) newState.sales = sales_M;
+
+        const saleItems_M = mergeLocal<SaleItem>(saleItems, 'sale_items');
+        if (saleItems_M) newState.saleItems = saleItems_M;
+
+        const invoices_M = mergeLocal<Invoice>(invoices, 'invoices');
+        if (invoices_M) newState.invoices = invoices_M;
+
+        const expenses_M = mergeLocal<Expense>(expenses, 'expenses');
+        if (expenses_M) newState.expenses = expenses_M;
+
+        const notifications_M = mergeLocal<Notification>(notifications, 'notifications');
+        if (notifications_M) newState.notifications = notifications_M;
+
+        const activityLogs_M = mergeLocal<ActivityLog>(activityLogs, 'activity_logs');
+        if (activityLogs_M) newState.activityLogs = activityLogs_M;
+
+        set(newState);
       } catch (err) {
         console.error('Supabase parallel synchronization failed:', err);
       }
-    } else {
-      const filterByShop = <T extends { shop_id: string }>(tbl: string): T[] => {
-        const items = localDB.getCollection<T>(tbl);
-        return items.filter(item => item.shop_id === shop.id);
-      };
-
-      const localSettingsRaw = localStorage.getItem('flour_db_settings');
-      const settingsObj = localSettingsRaw ? JSON.parse(localSettingsRaw) : {};
-
-      set({
-        products: filterByShop<Product>('products'),
-        categories: filterByShop<any>('categories'),
-        inventoryLogs: filterByShop<InventoryLog>('inventory_logs'),
-        customers: filterByShop<Customer>('customers'),
-        customerTransactions: filterByShop<CustomerTransaction>('customer_transactions'),
-        suppliers: filterByShop<Supplier>('suppliers'),
-        supplierTransactions: filterByShop<SupplierTransaction>('supplier_transactions'),
-        sales: filterByShop<Sale>('sales'),
-        saleItems: filterByShop<SaleItem>('sale_items'),
-        invoices: filterByShop<Invoice>('invoices'),
-        expenses: filterByShop<Expense>('expenses'),
-        notifications: filterByShop<Notification>('notifications'),
-        activityLogs: filterByShop<ActivityLog>('activity_logs'),
-        settings: settingsObj,
-        appMode: 'demo'
-      });
     }
   },
 
@@ -712,14 +752,23 @@ export const useStore = create<AppStore>((set, get) => ({
         if (localDataRaw) {
           let items = JSON.parse(localDataRaw);
           if (Array.isArray(items) && items.length > 0) {
-            // Filter out default fallback IDs (UUIDs start with 1111 or 2222, or are not valid UUIDs)
+            // Filter out default fallback IDs (UUIDs start with 1111 or 2222)
             items = items.filter(item => {
               const strId = String(item.id || '');
-              // Match standard v4 UUID structure
-              const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(strId);
-              // Ignore system initialization placeholders to avoid unique constraint or syntax errors
               const isSystemPlaceholder = strId.startsWith('11111111') || strId.startsWith('22222222');
-              return isUuid && !isSystemPlaceholder;
+              
+              // Filter out demo data IDs from supabase.ts (prod-1, cust-1, etc.)
+              const isDemoId = strId.startsWith('prod-') || strId.startsWith('cust-') || 
+                               strId.startsWith('sale-') || strId.startsWith('inv-') ||
+                               strId.startsWith('si-') || strId.startsWith('cat-') ||
+                               strId.startsWith('sup-') || strId.startsWith('exp-') ||
+                               strId.startsWith('log-') || strId.startsWith('tx-') ||
+                               strId.startsWith('act-') || strId.startsWith('not-');
+
+              // Also check if this item belongs to the current shop to avoid cross-tenant sync if data was mixed
+              const isWrongShop = get().currentShop && item.shop_id && item.shop_id !== get().currentShop?.id;
+
+              return !isSystemPlaceholder && !isDemoId && !isWrongShop;
             });
             
             if (items.length > 0) {
@@ -1166,7 +1215,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const shop = get().currentShop;
     if (!shop) return;
 
-    const newProgId = config.isOnline ? crypto.randomUUID() : `prod-${Date.now()}`;
+    const newProgId = crypto.randomUUID();
     const newProduct: Product = {
       ...product,
       id: newProgId,
@@ -1415,7 +1464,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     if (!shop) return null;
 
     const newCat = {
-      id: config.isOnline ? crypto.randomUUID() : `cat-${Date.now()}`,
+      id: crypto.randomUUID(),
       shop_id: shop.id,
       name,
       description
@@ -1459,12 +1508,13 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const factor = (type === 'stock_in' || type === 'adjustment') ? 1 : -1;
     const finalChange = quantity * factor;
     const computedStock = Math.max(0, targetProduct.stock + finalChange);
+    const logId = crypto.randomUUID();
 
     // Optimistic Update: instantly reflect inventory balance in UI state
     set({
       products: get().products.map(p => p.id === product_id ? { ...p, stock: computedStock, updated_at: new Date().toISOString() } : p),
       notifications: [{
-        id: `adj-notif-${Date.now()}`,
+        id: crypto.randomUUID(),
         shop_id: shop.id,
         title: 'Inventory Adjusted',
         message: `${targetProduct.name} stock updated to ${computedStock} ${targetProduct.unit}`,
@@ -1545,12 +1595,12 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     }
   },
 
-  createSale: async (data) => {
+  createSale: async (data: any) => {
     const shop = get().currentShop;
     const user = get().currentUser;
     if (!shop || !user) return null;
 
-    const saleId = config.isOnline ? crypto.randomUUID() : `sale-${Date.now()}`;
+    const saleId = crypto.randomUUID();
     let itemSubtotal = 0;
     const saleItemsList: SaleItem[] = [];
 
@@ -1562,7 +1612,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       itemSubtotal += lineTotal;
 
       saleItemsList.push({
-        id: config.isOnline ? crypto.randomUUID() : `si-${Date.now()}-${Math.random()}`,
+        id: crypto.randomUUID(),
         shop_id: shop.id,
         sale_id: saleId,
         product_id: prod.id,
@@ -1571,7 +1621,8 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
         unit: prod.unit,
         unit_price: line.sale_price,
         cost_price_at_sale: prod.cost_price,
-        total: lineTotal
+        total: lineTotal,
+        pending_sync: true
       });
     }
 
@@ -1603,283 +1654,117 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
       payment_method: data.payment_method,
       payment_status: paymentStatus,
       created_by: user.id,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      pending_sync: true
     };
 
     const newInvoice: Invoice = {
-      id: config.isOnline ? crypto.randomUUID() : `inv-${Date.now()}`,
+      id: crypto.randomUUID(),
       shop_id: shop.id,
       sale_id: saleId,
       invoice_number: invNumber,
       due_date: paymentStatus !== 'paid' ? new Date(Date.now() + 3600000 * 24 * 7).toISOString().split('T')[0] : null,
       notes: data.customer_id ? `Client Ledger Outstanding Invoice.` : `Instore Walk-in cash receipt.`,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      pending_sync: true
     };
 
-    // --- INSTANT OPTIMISTIC STATE UPDATE ---
-    const currentProducts = get().products;
-    const currentCustomers = get().customers;
-    const updatedProducts = currentProducts.map(p => {
-      const line = data.items.find(item => item.product_id === p.id);
-      if (line) {
-        return { ...p, stock: Math.max(0, p.stock - line.quantity) };
+    // --- PHASE 1: PERSIST TO LOCAL STORAGE IMMEDIATELY ---
+    const salesLocal = localDB.getCollection<Sale>('sales');
+    const saleItemsLocal = localDB.getCollection<SaleItem>('sale_items');
+    const invoicesLocal = localDB.getCollection<Invoice>('invoices');
+    const productsLocal = localDB.getCollection<Product>('products');
+    const customersLocal = localDB.getCollection<Customer>('customers');
+    const transLocal = localDB.getCollection<CustomerTransaction>('customer_transactions');
+
+    salesLocal.push(newSale);
+    saleItemsLocal.push(...saleItemsList);
+    invoicesLocal.push(newInvoice);
+
+    // Update product stock locally
+    for (const item of data.items) {
+      const pIdx = productsLocal.findIndex(p => p.id === item.product_id);
+      if (pIdx !== -1) {
+        productsLocal[pIdx].stock = Math.max(0, parseFloat((productsLocal[pIdx].stock - item.quantity).toFixed(2)));
+        productsLocal[pIdx].updated_at = new Date().toISOString();
+        productsLocal[pIdx].pending_sync = true;
       }
-      return p;
-    });
-    const updatedCustomers = currentCustomers.map(c => {
-      if (c.id === data.customer_id && remainingUnpaidCharge > 0) {
-        return { ...c, balance: c.balance + remainingUnpaidCharge };
-      }
-      return c;
-    });
+    }
 
-    // Update state instantly so checkout completes immediately!
-    const successNotification: Notification = {
-      id: `sale-notif-${Date.now()}`,
-      shop_id: shop.id,
-      title: 'Sale Completed',
-      message: `Invoice ${invNumber} generated successfully.`,
-      type: 'success',
-      read: false,
-      created_at: new Date().toISOString()
-    };
-
-    set({
-      products: updatedProducts,
-      customers: updatedCustomers,
-      sales: [newSale, ...get().sales],
-      saleItems: [...saleItemsList, ...get().saleItems],
-      invoices: [newInvoice, ...get().invoices],
-      notifications: [successNotification, ...get().notifications]
-    });
-
-    if (config.isOnline && supabase) {
-      (async () => {
-        try {
-          // Stage 1: Update independent tables (Products, Customers)
-          const prepPromises: Promise<any>[] = [];
-
-          // Decrease stock on products and record notifications
-          for (const line of data.items) {
-            const prod = currentProducts.find(p => p.id === line.product_id);
-            if (!prod) continue;
-            const finalStock = Math.max(0, prod.stock - line.quantity);
-            prepPromises.push(supabase.from('products').update({ stock: finalStock, updated_at: new Date().toISOString() }).eq('id', prod.id));
-            
-            if (finalStock <= prod.min_stock_alert) {
-              prepPromises.push(supabase.from('notifications').insert([{
-                id: crypto.randomUUID(),
-                shop_id: shop.id,
-                title: 'Low Stock Alert',
-                message: `${prod.name} has been depleted to ${finalStock} ${prod.unit} via sale ${saleId}`,
-                type: 'low_stock',
-                read: false
-              }]));
-            }
-          }
-
-          // Customer balance updates
-          if (data.customer_id) {
-            const activeCustomer = currentCustomers.find(c => c.id === data.customer_id);
-            if (activeCustomer) {
-              if (remainingUnpaidCharge > 0) {
-                const updatedBal = activeCustomer.balance + remainingUnpaidCharge;
-                prepPromises.push(supabase.from('customers').update({ balance: updatedBal }).eq('id', data.customer_id));
-              }
-            }
-          }
-
-          if (prepPromises.length > 0) {
-            await Promise.all(prepPromises);
-          }
-
-          // Stage 2: Insert the Sale record (parent table referenced by children)
-          const { error: saleErr } = await supabase.from('sales').insert([newSale]);
-          if (saleErr) {
-            throw saleErr;
-          }
-
-          // Stage 3: Insert dependent child records referencing sales(id)
-          const childPromises: Promise<any>[] = [];
-
-          if (saleItemsList.length > 0) {
-            childPromises.push(supabase.from('sale_items').insert(saleItemsList));
-          }
-          childPromises.push(supabase.from('invoices').insert([newInvoice]));
-
-          // Insert customer transactions linked to the sale
-          if (data.customer_id) {
-            const activeCustomer = currentCustomers.find(c => c.id === data.customer_id);
-            if (activeCustomer) {
-              if (remainingUnpaidCharge > 0) {
-                childPromises.push(supabase.from('customer_transactions').insert([{
-                  id: crypto.randomUUID(),
-                  shop_id: shop.id,
-                  customer_id: data.customer_id,
-                  type: 'credit',
-                  amount: remainingUnpaidCharge,
-                  sale_id: saleId,
-                  description: `Outstanding credit balance. PKR ${data.paid_amount} deposit.`
-                }]));
-              }
-              if (data.paid_amount > 0) {
-                childPromises.push(supabase.from('customer_transactions').insert([{
-                  id: crypto.randomUUID(),
-                  shop_id: shop.id,
-                  customer_id: data.customer_id,
-                  type: 'payment_received',
-                  amount: data.paid_amount,
-                  sale_id: saleId,
-                  description: `Deposit toward checkout sale`,
-                  payment_method: data.payment_method
-                }]));
-              }
-            }
-          }
-
-          const customerLabel = data.customer_id 
-            ? (currentCustomers.find(c => c.id === data.customer_id)?.name || 'Credit Account')
-            : (data.customer_name_manual || 'Walk-in customer');
-
-          childPromises.push(supabase.from('activity_logs').insert([{
+    // Update customer balance locally
+    if (data.customer_id) {
+      const cIdx = customersLocal.findIndex(c => c.id === data.customer_id);
+      if (cIdx !== -1) {
+        if (remainingUnpaidCharge > 0) {
+          customersLocal[cIdx].balance += remainingUnpaidCharge;
+          customersLocal[cIdx].pending_sync = true;
+          
+          transLocal.push({
             id: crypto.randomUUID(),
-            shop_id: shop.id,
-            user_email: user.email,
-            action: 'Created POS Transaction',
-            details: `Invoice ${invNumber} generated for ${customerLabel}. Paid: PKR ${data.paid_amount.toLocaleString()}.`
-          }]));
-
-          childPromises.push(supabase.from('notifications').insert([{
-            id: crypto.randomUUID(),
-            shop_id: shop.id,
-            title: 'POS Sale Executed',
-            message: `Invoice ${invNumber} generated successfully.`,
-            type: 'success',
-            read: false
-          }]));
-
-          await Promise.all(childPromises);
-        } catch (err) {
-          console.error('Supabase live transaction insert failed:', err);
-        } finally {
-          get().refreshData();
-        }
-      })();
-    } else {
-      // Offline LocalDB mutations
-      const products = localDB.getCollection<Product>('products');
-      const sales = localDB.getCollection<Sale>('sales');
-      const saleItems = localDB.getCollection<SaleItem>('sale_items');
-      const invoices = localDB.getCollection<Invoice>('invoices');
-      const customers = localDB.getCollection<Customer>('customers');
-      const custTransactions = localDB.getCollection<CustomerTransaction>('customer_transactions');
-
-      for (const line of data.items) {
-        const pIdx = products.findIndex(p => p.id === line.product_id);
-        if (pIdx === -1) continue;
-        products[pIdx].stock = Math.max(0, parseFloat((products[pIdx].stock - line.quantity).toFixed(2)));
-        products[pIdx].updated_at = new Date().toISOString();
-
-        if (products[pIdx].stock <= products[pIdx].min_stock_alert) {
-          const alerts = localDB.getCollection<Notification>('notifications');
-          alerts.push({
-            id: `not-${Date.now()}-${Math.random()}`,
-            shop_id: shop.id,
-            title: 'Low Stock Alert',
-            message: `${products[pIdx].name} has been depleted to ${products[pIdx].stock} ${products[pIdx].unit} via sale ${saleId}`,
-            type: 'low_stock',
-            read: false,
-            created_at: new Date().toISOString()
-          });
-          localDB.saveCollection('notifications', alerts);
-        }
-      }
-      localDB.saveCollection('products', products);
-
-      if (data.customer_id && remainingUnpaidCharge > 0) {
-        const cIdx = customers.findIndex(c => c.id === data.customer_id);
-        if (cIdx !== -1) {
-          customers[cIdx].balance += remainingUnpaidCharge;
-          custTransactions.push({
-            id: `tx-${Date.now()}`,
             shop_id: shop.id,
             customer_id: data.customer_id,
             type: 'credit',
             amount: remainingUnpaidCharge,
             sale_id: saleId,
-            description: `Credit outstanding from checkout sale. PKR ${data.paid_amount} deposit.`,
+            description: `Credit Sale: ${invNumber}`,
             payment_method: null,
-            created_at: new Date().toISOString()
+            created_at: new Date().toISOString(),
+            pending_sync: true
+          });
+        }
+        
+        if (data.paid_amount > 0) {
+          transLocal.push({
+            id: crypto.randomUUID(),
+            shop_id: shop.id,
+            customer_id: data.customer_id,
+            type: 'payment_received',
+            amount: data.paid_amount,
+            sale_id: saleId,
+            description: `Payment for Invoice: ${invNumber}`,
+            payment_method: data.payment_method,
+            created_at: new Date().toISOString(),
+            pending_sync: true
           });
         }
       }
+    }
 
-      if (data.customer_id && data.paid_amount > 0) {
-        custTransactions.push({
-          id: `tx-dep-${Date.now()}`,
+    localDB.saveCollection('sales', salesLocal);
+    localDB.saveCollection('sale_items', saleItemsLocal);
+    localDB.saveCollection('invoices', invoicesLocal);
+    localDB.saveCollection('products', productsLocal);
+    localDB.saveCollection('customers', customersLocal);
+    localDB.saveCollection('customer_transactions', transLocal);
+
+    // Update UI State instantly
+    const notifications = get().notifications;
+    set({
+      notifications: [
+        {
+          id: crypto.randomUUID(),
           shop_id: shop.id,
-          customer_id: data.customer_id,
-          type: 'payment_received',
-          amount: data.paid_amount,
-          sale_id: saleId,
-          description: `Deposit toward checkout sale`,
-          payment_method: data.payment_method,
+          title: 'Sale Registered',
+          message: `Invoice ${invNumber} for ${netAmount.toLocaleString()} ${shop.currency} saved.`,
+          type: 'success',
+          read: false,
           created_at: new Date().toISOString()
-        });
-      }
+        },
+        ...notifications
+      ]
+    });
+    await get().refreshData();
 
-      localDB.saveCollection('customers', customers);
-      localDB.saveCollection('customer_transactions', custTransactions);
-
-      sales.push(newSale);
-      localDB.saveCollection('sales', sales);
-
-      saleItems.push(...saleItemsList);
-      localDB.saveCollection('sale_items', saleItems);
-
-      invoices.push(newInvoice);
-      localDB.saveCollection('invoices', invoices);
-
-      const successNotif: Notification = {
-        id: `not-success-${Date.now()}`,
-        shop_id: shop.id,
-        title: 'Sale Completed',
-        message: `Invoice ${invNumber} generated successfully.`,
-        type: 'success',
-        read: false,
-        created_at: new Date().toISOString()
-      };
-      const alerts = localDB.getCollection<Notification>('notifications');
-      alerts.push(successNotif);
-      localDB.saveCollection('notifications', alerts);
-
-      const logs = localDB.getCollection<ActivityLog>('activity_logs');
-      const customerLabel = data.customer_id 
-        ? (customers.find(c => c.id === data.customer_id)?.name || 'Credit Client')
-        : (data.customer_name_manual || 'Walk-in customer');
-      logs.push({
-        id: `act-${Date.now()}`,
-        shop_id: shop.id,
-        user_email: user.email,
-        action: 'Created Transaction',
-        details: `Completed receipt ${invNumber} for ${customerLabel}. Total: PKR ${netAmount.toLocaleString()}`,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('activity_logs', logs);
-
-      const notesList = localDB.getCollection<Notification>('notifications');
-      notesList.push({
-        id: `not-sale-${Date.now()}`,
-        shop_id: shop.id,
-        title: 'Receipt Created',
-        message: `Invoice ${invNumber} generated for PKR ${netAmount.toLocaleString()}`,
-        type: 'success',
-        read: false,
-        created_at: new Date().toISOString()
-      });
-      localDB.saveCollection('notifications', notesList);
-
-      get().refreshData();
+    // --- PHASE 2: ATTEMPT CLOUD SYNC IF ONLINE ---
+    if (config.isOnline && get().connectionState === 'online' && supabase) {
+      (async () => {
+        try {
+          // Attempt immediate sync for the entries we just created locally
+          await get().syncLocalToCloud();
+        } catch (err) {
+          console.warn('[OFFLINE QUEUE] Sale saved to local buffer, will retry on next stable connection pulse:', err);
+        }
+      })();
     }
 
     return saleId;
@@ -1889,7 +1774,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const shop = get().currentShop;
     if (!shop) return;
 
-    const newCustId = config.isOnline ? crypto.randomUUID() : `cust-${Date.now()}`;
+    const newCustId = crypto.randomUUID();
     const newCust: Customer = {
       id: newCustId,
       shop_id: shop.id,
@@ -2035,7 +1920,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     const shop = get().currentShop;
     if (!shop) return;
 
-    const newSupId = config.isOnline ? crypto.randomUUID() : `sup-${Date.now()}`;
+    const newSupId = crypto.randomUUID();
     const newSup: Supplier = {
       id: newSupId,
       shop_id: shop.id,
@@ -2182,7 +2067,7 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
 
     const newExp: Expense = {
       ...data,
-      id: config.isOnline ? crypto.randomUUID() : `exp-${Date.now()}`,
+      id: crypto.randomUUID(),
       shop_id: shop.id,
       created_by: get().currentUser?.id || 'sys',
       created_at: new Date().toISOString()
@@ -2249,6 +2134,16 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     } else {
       get().refreshData();
     }
+  },
+
+  addNotification: (data) => {
+    const newNotif: Notification = {
+      id: crypto.randomUUID(),
+      read: false,
+      created_at: new Date().toISOString(),
+      ...data
+    } as Notification;
+    set({ notifications: [newNotif, ...get().notifications] });
   },
 
   clearNotification: async (id) => {
