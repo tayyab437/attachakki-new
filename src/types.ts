@@ -175,7 +175,7 @@ export interface Notification {
   shop_id: string;
   title: string;
   message: string;
-  type: 'info' | 'low_stock' | 'credit_alert' | 'success' | 'error';
+  type: 'info' | 'low_stock' | 'credit_alert' | 'success';
   read: boolean;
   created_at: string;
   pending_sync?: boolean;

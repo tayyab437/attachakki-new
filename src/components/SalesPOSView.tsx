@@ -6,7 +6,6 @@ import {
   ChevronDown, ChevronUp, SlidersHorizontal, LayoutList
 } from 'lucide-react';
 import { formatPKDate, formatPKTime } from '../lib/time';
-import { audioService } from '../lib/audio';
 
 export default function SalesPOSView() {
   const { products, customers, createSale, currentShop, sales, invoices, saleItems, categories } = useStore();
@@ -119,8 +118,6 @@ export default function SalesPOSView() {
       return [...prev, { product_id: productId, quantity: 1 }];
     });
 
-    audioService.playInfo();
-
     // Auto-focus the last updated product for quick custom edits
     setExpandedId(productId);
 
@@ -227,54 +224,37 @@ export default function SalesPOSView() {
     e.preventDefault();
     if (cart.length === 0) return;
 
-    try {
-      const payloadItems = cart.map(item => {
-        const prod = products.find(p => p.id === item.product_id)!;
-        return {
-          product_id: item.product_id,
-          quantity: item.quantity,
-          sale_price: item.custom_unit_price ?? prod.sale_price
-        };
-      });
+    const payloadItems = cart.map(item => {
+      const prod = products.find(p => p.id === item.product_id)!;
+      return {
+        product_id: item.product_id,
+        quantity: item.quantity,
+        sale_price: item.custom_unit_price ?? prod.sale_price
+      };
+    });
 
-      const activePaid = customerId ? paidAmount : cartTotals.grandTotal;
+    const activePaid = customerId ? paidAmount : cartTotals.grandTotal;
 
-      const createdId = await createSale({
-        customer_id: customerId || null,
-        customer_name_manual: customerId ? null : (walkInName || 'Walk-in Customer'),
-        items: payloadItems,
-        discount: discount || 0,
-        paid_amount: Number(activePaid),
-        payment_method: paymentMethod
-      });
+    const createdId = await createSale({
+      customer_id: customerId || null,
+      customer_name_manual: customerId ? null : (walkInName || 'Walk-in Customer'),
+      items: payloadItems,
+      discount: discount || 0,
+      paid_amount: Number(activePaid),
+      payment_method: paymentMethod
+    });
 
-      if (createdId) {
-        setCompletedSaleId(createdId);
-        // Reset POS Cart
-        setCart([]);
-        setAmountInputs({});
-        setPriceInputs({});
-        setCustomerId('');
-        setWalkInName('');
-        setDiscount(0);
-        setPaidAmount(0);
-        setExpandedId(null);
-      } else {
-        useStore.getState().addNotification({
-          shop_id: currentShop?.id || 'sys',
-          title: 'Checkout Failed',
-          message: 'Could not register the sale. Please check inventory or connection.',
-          type: 'error'
-        });
-      }
-    } catch (err: any) {
-      console.error('POS Checkout Error:', err);
-      useStore.getState().addNotification({
-        shop_id: currentShop?.id || 'sys',
-        title: 'System Error',
-        message: err.message || 'An unexpected error occurred during checkout.',
-        type: 'error'
-      });
+    if (createdId) {
+      setCompletedSaleId(createdId);
+      // Reset POS Cart
+      setCart([]);
+      setAmountInputs({});
+      setPriceInputs({});
+      setCustomerId('');
+      setWalkInName('');
+      setDiscount(0);
+      setPaidAmount(0);
+      setExpandedId(null);
     }
   };
 

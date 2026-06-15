@@ -115,7 +115,6 @@ interface AppStore {
   updateSettings: (updatedFields: any) => Promise<void>;
   updateShopProfile: (data: Partial<Shop>) => Promise<void>;
   syncLocalToCloud: () => Promise<void>;
-  addNotification: (notification: Omit<Notification, 'id' | 'read' | 'created_at'>) => void;
 
   // Super Admin controls
   toggleShopStatus: (shopId: string) => Promise<void>;
@@ -1738,21 +1737,6 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     localDB.saveCollection('customer_transactions', transLocal);
 
     // Update UI State instantly
-    const notifications = get().notifications;
-    set({
-      notifications: [
-        {
-          id: crypto.randomUUID(),
-          shop_id: shop.id,
-          title: 'Sale Registered',
-          message: `Invoice ${invNumber} for ${netAmount.toLocaleString()} ${shop.currency} saved.`,
-          type: 'success',
-          read: false,
-          created_at: new Date().toISOString()
-        },
-        ...notifications
-      ]
-    });
     await get().refreshData();
 
     // --- PHASE 2: ATTEMPT CLOUD SYNC IF ONLINE ---
@@ -2134,16 +2118,6 @@ Detailed Database Constraint: [Code ${errCode}] ${errMsg}`;
     } else {
       get().refreshData();
     }
-  },
-
-  addNotification: (data) => {
-    const newNotif: Notification = {
-      id: crypto.randomUUID(),
-      read: false,
-      created_at: new Date().toISOString(),
-      ...data
-    } as Notification;
-    set({ notifications: [newNotif, ...get().notifications] });
   },
 
   clearNotification: async (id) => {
