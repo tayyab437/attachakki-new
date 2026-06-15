@@ -181,56 +181,18 @@ export const supabase = new Proxy({}, {
 }) as any;
 
 // Synchronous initial loading of local/Vite build credentials
-const URL_B64 = "aHR0cHM6Ly9vaXZzenlndGl1dWlqZmp3ZXVkbi5zdXBhYmFzZS5jbw==";
-const KEY_B64 = "ZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnBjM01pT2lKemRYQmhZbUZ6WlNJc0luSmxaaUk2SW05cGRuTjZlV2QwYVhWMWFXcG1hbmRsZFdSdUlpd2ljbTlzWlNJNkltRnViMjRpTENKcFlYUWlPakUzTnprM05qa3dPVFVzSW1WNGNDSTZNakE1TlRNME5UQTVOWDAuZUxySGFfTGJrQ19xSjZYYWhBeXZsQ285a05KdHhYXzI5UE1nMU9Ia29OTQ==";
-
-// Dynamic decoding to ensure keys are not in raw text in file
-const getDecodedUrl = () => {
-  try {
-    return typeof window !== 'undefined' && window.atob ? window.atob(URL_B64) : Buffer.from(URL_B64, 'base64').toString();
-  } catch {
-    return 'https://oivszygtiuuijfjweudn.supabase.co';
-  }
-};
-
-const getDecodedKey = () => {
-  try {
-    return typeof window !== 'undefined' && window.atob ? window.atob(KEY_B64) : Buffer.from(KEY_B64, 'base64').toString();
-  } catch {
-    return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pdnN6eWd0aXV1aWpmandldWRuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjkwOTUsImV4cCI6MjA5NTM0NTA5NX0.eLrHa_LbkC_qJ6XahAyvlCo9kNJtxX_29PMg1OHkoNM';
-  }
-};
-
-// Masked display helpers to ensure credentials are fully protected in UI
-export const getMaskedUrl = () => {
-  const url = getDecodedUrl();
-  return url.replace(/(https?:\/\/)(.{4})(.*)(\.supabase\.co)/, '$1$2••••••••••••$4');
-};
-
-export const getMaskedKey = () => {
-  return 'ey' + '•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••';
-};
-
 const initSync = () => {
   const metaEnv = (import.meta as any).env || {};
   
   // Read either import.meta.env or compiled define bindings
-  let envUrl = metaEnv.VITE_SUPABASE_URL;
+  let envUrl = metaEnv.VITE_SUPABASE_URL || metaEnv.SUPABASE_URL;
   if (!envUrl && typeof process !== 'undefined' && process.env) {
-    envUrl = process.env.VITE_SUPABASE_URL;
+    envUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   }
   
-  let envKey = metaEnv.VITE_SUPABASE_ANON_KEY;
+  let envKey = metaEnv.VITE_SUPABASE_ANON_KEY || metaEnv.SUPABASE_ANON_KEY;
   if (!envKey && typeof process !== 'undefined' && process.env) {
-    envKey = process.env.VITE_SUPABASE_ANON_KEY;
-  }
-  
-  // Apply our auto-filled system keys as default
-  if (!envUrl) {
-    envUrl = getDecodedUrl();
-  }
-  if (!envKey) {
-    envKey = getDecodedKey();
+    envKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   }
   
   const storedUrl = localStorage.getItem('supa_url_override');
@@ -246,6 +208,17 @@ const initSync = () => {
     return;
   }
   config.isOnline = false;
+};
+
+// Masked display helpers for UI
+export const getMaskedUrl = () => {
+  if (!config.url) return 'Not Configured';
+  return config.url.replace(/(https?:\/\/)(.{4})(.*)(\.supabase\.co)/, '$1$2••••••••••••$4');
+};
+
+export const getMaskedKey = () => {
+  if (!config.key) return 'Not Configured';
+  return config.key.substring(0, 4) + '••••••••••••••••••••••••••••••••••••••••';
 };
 
 initSync();
