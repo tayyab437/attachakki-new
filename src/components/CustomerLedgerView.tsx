@@ -1,13 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
-  User, Plus, Search, HelpCircle, ArrowUpRight, ArrowDownRight, 
+  User, Plus, Search, HelpCircle, ArrowUpRight, ArrowDownRight, Trash2,
   Coins, Sparkles, Phone, Mail, FileText, CheckCircle2 
 } from 'lucide-react';
 import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function CustomerLedgerView() {
-  const { customers, customerTransactions, addCustomer, receiveCustomerPayment, currentShop } = useStore();
+  const { customers, customerTransactions, addCustomer, deleteCustomer, deleteCustomerTransaction, addCustomerTransaction, currentShop } = useStore();
 
   // Search filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -25,6 +25,7 @@ export default function CustomerLedgerView() {
   // Payment dialog attributes
   const [showPayForm, setShowPayForm] = useState(false);
   const [payAmount, setPayAmount] = useState<number>(0);
+  const [payType, setPayType] = useState<'credit' | 'payment_received'>('payment_received');
   const [payMethod, setPayMethod] = useState<'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa'>('Cash');
   const [payDesc, setPayDesc] = useState('');
 
@@ -88,16 +89,24 @@ export default function CustomerLedgerView() {
     e.preventDefault();
     if (!activeCustomerId || payAmount <= 0) return;
 
-    receiveCustomerPayment({
+    addCustomerTransaction({
       customer_id: activeCustomerId,
       amount: Number(payAmount),
-      method: payMethod,
-      description: payDesc || 'Credit repays ledger remittance settlement'
+      type: payType,
+      method: payType === 'payment_received' ? payMethod : null,
+      description: payDesc || (payType === 'payment_received' ? 'Direct Payment' : 'Amount Added')
     });
 
     setPayAmount(0);
     setPayDesc('');
     setShowPayForm(false);
+  };
+
+  const handleDeleteCustomer = (id: string, name: string) => {
+    if (confirm(`Are you sure you want to delete ${name}? This will also delete all their transaction history. This action cannot be undone.`)) {
+      deleteCustomer(id);
+      setActiveCustomerId(customers.find(c => c.id !== id)?.id || null);
+    }
   };
 
   return (
@@ -200,7 +209,7 @@ export default function CustomerLedgerView() {
         <div className="fixed inset-0 z-50 bg-gray-950/45 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full border border-gray-150 shadow-md p-5 space-y-4">
             <div className="flex justify-between items-center pb-2 border-b border-gray-100">
-              <span className="text-xs font-bold text-gray-900 uppercase tracking-widest">Receive Balance Repayment</span>
+              <span className="text-xs font-bold text-gray-900 uppercase tracking-widest">Customer Ledger Entry</span>
               <button onClick={() => setShowPayForm(false)} className="text-xs font-bold text-gray-400 hover:text-gray-900">Close</button>
             </div>
 
@@ -213,8 +222,27 @@ export default function CustomerLedgerView() {
                 </span>
               </div>
 
+              <div className="flex gap-2 p-1 bg-gray-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setPayType('payment_received')}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${payType === 'payment_received' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Payment Received
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPayType('credit')}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${payType === 'credit' ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Amount Added
+                </button>
+              </div>
+
               <div>
-                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Repayment Money Cash-In *</label>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">
+                  {payType === 'payment_received' ? 'Repayment Money Cash-In *' : 'Charge Amount (Add to Debt) *'}
+                </label>
                 <input
                   type="number"
                   step="any"
@@ -226,25 +254,27 @@ export default function CustomerLedgerView() {
                 />
               </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Repay Direct channel</label>
-                <select
-                  value={payMethod}
-                  onChange={(e) => setPayMethod(e.target.value as any)}
-                  className="w-full text-xs p-2.5 bg-gray-50 border border-gray-200 focus:outline-none rounded-xl font-semibold text-gray-800"
-                >
-                  <option value="Cash">Cash Handed</option>
-                  <option value="JazzCash">JazzCash Transfer</option>
-                  <option value="EasyPaisa">EasyPaisa Transfer</option>
-                  <option value="Bank">Bank Receipt Remit</option>
-                </select>
-              </div>
+              {payType === 'payment_received' && (
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Repay Direct channel</label>
+                  <select
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value as any)}
+                    className="w-full text-xs p-2.5 bg-gray-50 border border-gray-200 focus:outline-none rounded-xl font-semibold text-gray-800"
+                  >
+                    <option value="Cash">Cash Handed</option>
+                    <option value="JazzCash">JazzCash Transfer</option>
+                    <option value="EasyPaisa">EasyPaisa Transfer</option>
+                    <option value="Bank">Bank Receipt Remit</option>
+                  </select>
+                </div>
+              )}
 
               <div>
-                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Discrepancy / Receipts notes</label>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Reason / Notes (Optional)</label>
                 <input
                   type="text"
-                  placeholder="e.g. Cleared pending invoice balance"
+                  placeholder={payType === 'payment_received' ? "e.g. Cleared pending invoice balance" : "e.g. Manual credit for off-menu items"}
                   value={payDesc}
                   onChange={(e) => setPayDesc(e.target.value)}
                   className="w-full text-xs p-2.5 bg-gray-50 border border-gray-200 focus:outline-none rounded-xl text-gray-850"
@@ -253,9 +283,9 @@ export default function CustomerLedgerView() {
 
               <button
                 type="submit"
-                className="w-full text-xs font-bold py-2.5 bg-gray-900 hover:bg-gray-800 text-white rounded-xl transition cursor-pointer"
+                className={`w-full py-3 rounded-xl font-bold text-xs uppercase tracking-widest shadow-xs transition-all ${payType === 'payment_received' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}
               >
-                Register Remittance (PKR {(payAmount || 0).toLocaleString()})
+                {payType === 'payment_received' ? `Register Payment (${primaryCurrency} ${payAmount.toLocaleString()})` : `Post Charge (${primaryCurrency} ${payAmount.toLocaleString()})`}
               </button>
             </form>
           </div>
@@ -346,6 +376,13 @@ export default function CustomerLedgerView() {
                   >
                     <FileText className="h-4 w-4" />
                   </button>
+                  <button
+                    onClick={() => handleDeleteCustomer(activeCustomer.id, activeCustomer.name)}
+                    className="p-2 border border-red-100 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-xl transition-colors"
+                    title="Delete Account Ledger"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
 
@@ -367,9 +404,12 @@ export default function CustomerLedgerView() {
                         <tr className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">
                           <th className="px-3">Date</th>
                           <th className="px-3">Description</th>
-                          <th className="px-3 text-right">Draft</th>
+                          <th className="px-3 text-right">Net Amount</th>
+                          <th className="px-3 text-right">Spot Paid</th>
+                          <th className="px-3 text-right">Draft (Credit)</th>
                           <th className="px-3 text-right">Payment</th>
                           <th className="px-3 text-right">Net Balance</th>
+                          <th className="px-3 text-center">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -388,10 +428,16 @@ export default function CustomerLedgerView() {
                                     {isPayment ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
                                   </div>
                                   <div>
-                                    <span className="font-bold text-gray-900 block">{tx.description}</span>
-                                    {tx.payment_method && <span className="text-[9px] text-gray-500">Via {tx.payment_method}</span>}
+                                    <span className="font-bold text-gray-900 block leading-tight">{tx.description}</span>
+                                    {tx.payment_method && <span className="text-[9px] text-gray-500 font-medium">Via {tx.payment_method}</span>}
                                   </div>
                                 </div>
+                              </td>
+                              <td className="px-3 py-2 border-y border-gray-100 text-right font-mono text-gray-600">
+                                {tx.net_amount ? (tx.net_amount).toLocaleString() : '-'}
+                              </td>
+                              <td className="px-3 py-2 border-y border-gray-100 text-right font-mono text-emerald-600">
+                                {tx.paid_on_spot ? (tx.paid_on_spot).toLocaleString() : '-'}
                               </td>
                               <td className="px-3 py-2 border-y border-gray-100 text-right font-mono font-bold text-orange-700">
                                 {!isPayment ? `+${(tx.amount || 0).toLocaleString()}` : '-'}
@@ -399,8 +445,23 @@ export default function CustomerLedgerView() {
                               <td className="px-3 py-2 border-y border-gray-100 text-right font-mono font-bold text-emerald-700">
                                 {isPayment ? `-${(tx.amount || 0).toLocaleString()}` : '-'}
                               </td>
-                              <td className="px-3 py-2 border-y border-r rounded-r-xl border-gray-100 text-right font-mono font-bold text-gray-900 group-hover:bg-gray-100">
+                              <td className="px-3 py-2 border-y border-gray-100 text-right font-mono font-bold text-gray-900 group-hover:bg-gray-100">
                                 {(tx.runningBalance || 0).toLocaleString()}
+                              </td>
+                              <td className="px-3 py-2 border-y border-r rounded-r-xl border-gray-100 text-center">
+                                {!isOpening && (
+                                  <button
+                                    onClick={() => {
+                                      if (confirm('Are you sure you want to delete this specific ledger entry transaction? The customer outstanding balance will be automatically recalculated.')) {
+                                        deleteCustomerTransaction(tx.id);
+                                      }
+                                    }}
+                                    className="p-1 text-gray-400 hover:text-red-650 hover:bg-red-50 rounded-lg transition-colors inline-block"
+                                    title="Delete entry"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           );
@@ -428,13 +489,13 @@ export default function CustomerLedgerView() {
               </div>
               <div className="flex items-center gap-4">
                 <div className="flex flex-col items-end">
-                  <span className="text-[9px] opacity-60 uppercase font-bold">Calculation Rule</span>
-                  <span className="font-semibold italic">Drafts - Payments</span>
+                  <span className="text-[9px] opacity-60 uppercase font-bold text-gray-500">Statement Calculation</span>
+                  <span className="font-semibold italic text-gray-700">Total Credits - Payments</span>
                 </div>
                 <div className="h-8 w-[1px] bg-gray-300/30"></div>
                 <div className="flex flex-col items-end">
-                  <span className="text-[9px] opacity-60 uppercase font-bold">Current Standing</span>
-                  <span className="text-lg font-extrabold font-mono leading-none">
+                  <span className="text-[9px] font-bold uppercase text-gray-500">Total Payable / Balance</span>
+                  <span className="text-xl font-extrabold font-mono leading-none tracking-tight">
                     {activeCustomer.balance >= 0 ? '+' : ''}{(activeCustomer.balance || 0).toLocaleString()}
                   </span>
                 </div>

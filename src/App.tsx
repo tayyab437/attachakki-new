@@ -73,6 +73,14 @@ export default function App() {
     initStore();
   }, [initStore]);
 
+  // Handle Edit Sale redirection to POS
+  const editingSaleId = useStore(state => state.editingSaleId);
+  useEffect(() => {
+    if (editingSaleId) {
+      setActiveTab('pos');
+    }
+  }, [editingSaleId]);
+
   // Periodic network connectivity ping & event listeners
   useEffect(() => {
     const handleConnectivityChange = () => {

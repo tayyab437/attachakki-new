@@ -1,13 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
-  Building2, Plus, Search, Truck, ArrowUpRight, ArrowDownRight, 
+  Building2, Plus, Search, Truck, ArrowUpRight, ArrowDownRight, Trash2,
   Coins, Sparkles, Phone, ShieldAlert 
 } from 'lucide-react';
 import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function SupplierView() {
-  const { suppliers, supplierTransactions, addSupplier, makeSupplierPayment, currentShop } = useStore();
+  const { suppliers, supplierTransactions, addSupplier, deleteSupplier, deleteSupplierTransaction, makeSupplierPayment, currentShop } = useStore();
 
   // Search filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -82,6 +82,13 @@ export default function SupplierView() {
     setPayAmount(0);
     setPayDesc('');
     setShowPayForm(false);
+  };
+
+  const handleDeleteSupplier = (id: string, name: string) => {
+    if (confirm(`Are you sure you want to delete ${name}? This will also delete all arrival and payment records. This action cannot be undone.`)) {
+      deleteSupplier(id);
+      setActiveSupplierId(suppliers.find(s => s.id !== id)?.id || null);
+    }
   };
 
   return (
@@ -305,6 +312,13 @@ export default function SupplierView() {
                       All balances settled!
                     </span>
                   )}
+                  <button
+                    onClick={() => handleDeleteSupplier(activeSupplier.id, activeSupplier.name)}
+                    className="p-2 border border-red-100 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-xl transition-colors"
+                    title="Delete Supplier Account"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
 
@@ -334,11 +348,24 @@ export default function SupplierView() {
                             </div>
                           </div>
 
-                          <div className="text-right">
-                            <span className={`block font-extrabold font-mono text-xs ${isPayOf ? 'text-indigo-700' : 'text-amber-800'}`}>
-                              {isPayOf ? '-' : '+'}{primaryCurrency} {(tx.amount || 0).toLocaleString()}
-                            </span>
-                            <span className="block text-[9px] font-medium text-gray-400 mt-0.5 uppercase tracking-wide">{tx.type.replace('_', ' ')}</span>
+                          <div className="text-right flex items-center gap-2">
+                            <div>
+                              <span className={`block font-extrabold font-mono text-xs ${isPayOf ? 'text-indigo-700' : 'text-amber-800'}`}>
+                                {isPayOf ? '-' : '+'}{primaryCurrency} {(tx.amount || 0).toLocaleString()}
+                              </span>
+                              <span className="block text-[9px] font-medium text-gray-400 mt-0.5 uppercase tracking-wide">{tx.type.replace('_', ' ')}</span>
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (confirm('Are you sure you want to delete this specific supplier transaction? Balance calculations will be automatically updated.')) {
+                                  deleteSupplierTransaction(tx.id);
+                                }
+                              }}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Delete transaction record"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         </div>
                       );

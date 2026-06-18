@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS public.inventory_logs (
     quantity NUMERIC NOT NULL,
     unit TEXT NOT NULL,
     reason TEXT NOT NULL,
+    supplier_id TEXT REFERENCES public.suppliers(id) ON DELETE SET NULL,
+    unit_cost NUMERIC,
     created_by TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -88,6 +90,8 @@ CREATE TABLE IF NOT EXISTS public.customer_transactions (
     sale_id TEXT,
     description TEXT NOT NULL,
     payment_method TEXT,
+    net_amount NUMERIC,
+    paid_on_spot NUMERIC,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -222,8 +226,10 @@ ALTER TABLE public.notifications DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activity_logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings DISABLE ROW LEVEL SECURITY;
 
--- Disable restrict check constraints on 'unit' columns if left over from legacy schemas
+-- Disable restrict check constraints on columns if left over from legacy schemas
 ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_unit_check;
 ALTER TABLE public.sale_items DROP CONSTRAINT IF EXISTS sale_items_unit_check;
 ALTER TABLE public.inventory_logs DROP CONSTRAINT IF EXISTS inventory_logs_unit_check;
+ALTER TABLE public.supplier_transactions DROP CONSTRAINT IF EXISTS supplier_transactions_type_check;
+ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../lib/store';
 import { 
   ShoppingCart, Plus, Minus, Trash2, Search, User, CreditCard, 
@@ -8,7 +8,10 @@ import {
 import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function SalesPOSView() {
-  const { products, customers, createSale, currentShop, sales, invoices, saleItems, categories } = useStore();
+  const { 
+    products, customers, createSale, currentShop, sales, invoices, 
+    saleItems, categories, editingSaleId, setEditingSaleId, voidSale 
+  } = useStore();
 
   // Search products
   const [productSearch, setProductSearch] = useState('');
@@ -41,6 +44,29 @@ export default function SalesPOSView() {
 
   // Buffer raw text for price-override typing to avoid annoying decimal cursor drift
   const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
+
+  // Effect to load editing sale data
+  useEffect(() => {
+    if (editingSaleId) {
+      const sale = sales.find(s => s.id === editingSaleId);
+      if (sale) {
+        setCustomerId(sale.customer_id || '');
+        setWalkInName(sale.customer_name_manual || '');
+        setDiscount(sale.discount || 0);
+        setPaidAmount(sale.paid_amount || 0);
+        setPaymentMethod(sale.payment_method as any);
+
+        const items = saleItems
+          .filter(si => si.sale_id === editingSaleId)
+          .map(si => ({
+            product_id: si.product_id,
+            quantity: si.quantity,
+            custom_unit_price: si.unit_price
+          }));
+        setCart(items);
+      }
+    }
+  }, [editingSaleId, sales, saleItems]);
 
   const primaryCurrency = currentShop?.currency || 'PKR';
   const taxRate = currentShop?.tax_rate ?? 0;
@@ -235,6 +261,12 @@ export default function SalesPOSView() {
 
     const activePaid = customerId ? paidAmount : cartTotals.grandTotal;
 
+    // If editing, we VOID the old sale first then create a new one (as per request logic)
+    // "if click on edit it goes with that sale data in pos so that changing can be made and sale can be done again"
+    if (editingSaleId) {
+      await voidSale(editingSaleId);
+    }
+
     const createdId = await createSale({
       customer_id: customerId || null,
       customer_name_manual: customerId ? null : (walkInName || 'Walk-in Customer'),
@@ -246,6 +278,7 @@ export default function SalesPOSView() {
 
     if (createdId) {
       setCompletedSaleId(createdId);
+      setEditingSaleId(null);
       // Reset POS Cart
       setCart([]);
       setAmountInputs({});
@@ -283,8 +316,12 @@ export default function SalesPOSView() {
       <div className="lg:col-span-3 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
-            <h2 className="text-xl font-extrabold text-gray-900">Checkout Terminal</h2>
-            <p className="text-xs text-gray-500">Fast product click checkout & instant client ledger updates</p>
+            <h2 className="text-xl font-extrabold text-gray-900">
+              {editingSaleId ? 'Adjust & Update Sale' : 'Checkout Terminal'}
+            </h2>
+            <p className="text-xs text-gray-500">
+              {editingSaleId ? 'Modifying existing registered transaction' : 'Fast product click checkout & instant client ledger updates'}
+            </p>
           </div>
 
           {/* Product quick-search bar */}
@@ -387,11 +424,14 @@ export default function SalesPOSView() {
               <div className="flex items-center justify-between border-b border-gray-100 pb-3">
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-widest flex items-center gap-1.5">
                   <FileText className="h-4 w-4 text-orange-600" />
-                  <span>Invoice Details</span>
+                  <span>{editingSaleId ? 'Update Complete' : 'Invoice Details'}</span>
                 </h3>
                 <button
                   type="button"
-                  onClick={() => setCompletedSaleId(null)}
+                  onClick={() => {
+                    setCompletedSaleId(null);
+                    setEditingSaleId(null);
+                  }}
                   className="text-xs text-orange-600 font-extrabold hover:underline flex items-center gap-0.5"
                 >
                   + New Sale
@@ -491,7 +531,10 @@ export default function SalesPOSView() {
             {/* Print triggers */}
             <div className="flex items-center gap-2 pt-3 border-t border-gray-100 justify-end print:hidden">
               <button 
-                onClick={() => setCompletedSaleId(null)}
+                onClick={() => {
+                  setCompletedSaleId(null);
+                  setEditingSaleId(null);
+                }}
                 className="w-1/2 py-2.5 border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl transition cursor-pointer"
               >
                 Close Receipt
@@ -515,9 +558,29 @@ export default function SalesPOSView() {
                 </div>
                 
                 <div className="flex items-center gap-2">
+                  {editingSaleId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingSaleId(null);
+                        setCart([]);
+                        setCustomerId('');
+                        setWalkInName('');
+                        setDiscount(0);
+                        setPaidAmount(0);
+                      }}
+                      className="px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      <X className="h-3 w-3" />
+                      <span>Cancel Edit</span>
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setCart([])}
+                    onClick={() => {
+                      setCart([]);
+                      setEditingSaleId(null);
+                    }}
                     className="px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-tight bg-white border border-red-200 text-red-600 hover:bg-red-50 transition-all flex items-center gap-1 cursor-pointer"
                     title="Clear everything from cart"
                   >
@@ -1046,7 +1109,11 @@ export default function SalesPOSView() {
                 disabled={cart.length === 0}
                 className={`w-full py-3 rounded-xl text-xs font-bold font-sans text-white text-center transition-all cursor-pointer ${cart.length === 0 ? 'bg-gray-200 cursor-not-allowed text-gray-400 shadow-none' : 'bg-gray-950 hover:bg-gray-900 shadow-sm active:scale-98'}`}
               >
-                Process Secure Checkout ({primaryCurrency} {(cartTotals.grandTotal || 0).toLocaleString()})
+                {editingSaleId ? (
+                  `Update & Refund Adjusted Items (${primaryCurrency} ${(cartTotals.grandTotal || 0).toLocaleString()})`
+                ) : (
+                  `Process Secure Checkout (${primaryCurrency} ${(cartTotals.grandTotal || 0).toLocaleString()})`
+                )}
               </button>
             </div>
           </>

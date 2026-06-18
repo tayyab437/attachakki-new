@@ -2,12 +2,12 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { 
   FileText, Printer, Eye, Download, TrendingUp, Scale, Package, 
-  Coins, Sparkles, AlertCircle 
+  Coins, Sparkles, AlertCircle, Edit2, Trash2
 } from 'lucide-react';
 import { getPKTodayString, formatPKDate } from '../lib/time';
 
 export default function ReportsView() {
-  const { sales, saleItems, expenses, products, customers, currentShop } = useStore();
+  const { sales, saleItems, expenses, products, customers, currentShop, voidSale, setEditingSaleId } = useStore();
   const [activeReportTab, setActiveReportTab] = useState<'sales' | 'inventory' | 'credit' | 'profit_loss'>('sales');
 
   const primaryCurrency = currentShop?.currency || 'PKR';
@@ -161,26 +161,54 @@ export default function ReportsView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-gray-700 font-medium">
-                  {sales.map((s, index) => {
+                  {[...sales].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map((s) => {
                     const costOfSale = saleItems
                       .filter(item => item.sale_id === s.id)
                       .reduce((sum, item) => sum + (item.quantity * item.cost_price_at_sale), 0);
                     const profitPerSale = (s.net_amount || 0) - costOfSale;
+                    const inv = useStore.getState().invoices.find(i => i.sale_id === s.id);
 
                     return (
-                      <tr key={s.id}>
-                        <td className="py-2 font-bold font-mono text-gray-900 text-xs">SYS-REC-{index + 1001}</td>
-                        <td className="py-2">
+                      <tr key={s.id} className="hover:bg-gray-50/50 transition-colors group">
+                        <td className="py-2.5 font-bold font-mono text-gray-900 text-[10px]">
+                          {inv?.invoice_number || `REC-${s.id.slice(0, 5)}`}
+                        </td>
+                        <td className="py-2.5">
                           {customers.find(c => c.id === s.customer_id)?.name || s.customer_name_manual || 'Walk-in buyer'}
                         </td>
-                        <td className="py-2 uppercase font-semibold text-gray-550">{s.payment_method}</td>
-                        <td className="py-2 text-right font-mono font-bold text-gray-905">{primaryCurrency} {(s.net_amount || 0).toLocaleString()}</td>
-                        <td className={`py-2 text-right font-mono font-bold ${profitPerSale >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        <td className="py-2.5 uppercase font-semibold text-gray-550">{s.payment_method}</td>
+                        <td className="py-2.5 text-right font-mono font-bold text-gray-905">{primaryCurrency} {(s.net_amount || 0).toLocaleString()}</td>
+                        <td className={`py-2.5 text-right font-mono font-bold ${profitPerSale >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                           {primaryCurrency} {profitPerSale.toLocaleString()}
                         </td>
-                        <td className="py-2 text-right font-mono text-emerald-700 font-bold">{primaryCurrency} {(s.paid_amount || 0).toLocaleString()}</td>
-                        <td className="py-2 text-right font-mono text-orange-700 font-bold">
+                        <td className="py-2.5 text-right font-mono text-emerald-700 font-bold">{primaryCurrency} {(s.paid_amount || 0).toLocaleString()}</td>
+                        <td className="py-2.5 text-right font-mono text-orange-700 font-bold">
                           {primaryCurrency} {((s.net_amount || 0) - (s.paid_amount || 0)).toLocaleString()}
+                        </td>
+                        <td className="py-2.5 text-right pr-2">
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              onClick={() => {
+                                setEditingSaleId(s.id);
+                                // The main App component will handle tab switching via effect
+                              }}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                              title="Edit Sale"
+                            >
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('Are you absolutely sure you want to VOID this sale? Stock will be returned to inventory and ledger balances will be reversed.')) {
+                                  voidSale(s.id);
+                                }
+                              }}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Void Sale"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

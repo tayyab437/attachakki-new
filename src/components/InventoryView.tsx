@@ -7,15 +7,31 @@ import {
 import { formatPKDate, formatPKTime } from '../lib/time';
 
 export default function InventoryView() {
-  const { products, inventoryLogs, adjustInventory, currentShop } = useStore();
+  const { products, inventoryLogs, adjustInventory, deleteInventoryLog, currentShop, suppliers } = useStore();
   
   // States
   const [selectedProductId, setSelectedProductId] = useState('');
   const [logType, setLogType] = useState<'stock_in' | 'stock_out' | 'adjustment' | 'wastage'>('stock_in');
-  const [qty, setQty] = useState<number>(100);
+  const [qty, setQty] = useState<number>(1);
   const [reason, setReason] = useState('');
   
+  // Advanced fields
+  const [supplierId, setSupplierId] = useState('');
+  const [unitCost, setUnitCost] = useState<number>(0);
+  const [totalAmount, setTotalAmount] = useState<number>(0);
+  const [paidAmount, setPaidAmount] = useState<number>(0);
+  
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Sync total when qty or cost changed
+  React.useEffect(() => {
+    const calcTotal = parseFloat((qty * unitCost).toFixed(2));
+    setTotalAmount(calcTotal);
+    // Usually on first entry paid equals total
+    if (logType === 'stock_in') {
+      setPaidAmount(calcTotal);
+    }
+  }, [qty, unitCost, logType]);
 
   const handleAdjust = (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,13 +41,20 @@ export default function InventoryView() {
       product_id: selectedProductId,
       type: logType,
       quantity: Number(qty),
-      reason: reason || `Manual stock update (${logType})`
+      reason: reason || `Manual stock update (${logType})`,
+      supplier_id: supplierId || null,
+      unit_cost: Number(unitCost),
+      total_amount: Number(totalAmount),
+      paid_amount: Number(paidAmount)
     });
 
     // Reset Form
     setSelectedProductId('');
-    setQty(100);
+    setQty(1);
     setReason('');
+    setSupplierId('');
+    setUnitCost(0);
+    setPaidAmount(0);
   };
 
   // Sort logs by date descending (newest first)
@@ -76,7 +99,14 @@ export default function InventoryView() {
               <select
                 required
                 value={selectedProductId}
-                onChange={(e) => setSelectedProductId(e.target.value)}
+                onChange={(e) => {
+                  const pid = e.target.value;
+                  setSelectedProductId(pid);
+                  const prod = products.find(p => p.id === pid);
+                  if (prod) {
+                    setUnitCost(prod.cost_price);
+                  }
+                }}
                 className="w-full text-xs p-2.5 bg-gray-50 border border-gray-200 focus:outline-none rounded-xl"
               >
                 <option value="">Choose item...</option>
@@ -127,8 +157,8 @@ export default function InventoryView() {
               <div className="flex rounded-md shadow-xs">
                 <input
                   type="number"
-                  min={0.1}
-                  step={0.1}
+                  min={0.01}
+                  step={0.01}
                   required
                   value={qty === 0 ? '' : qty}
                   onChange={(e) => setQty(Number(e.target.value))}
@@ -137,11 +167,77 @@ export default function InventoryView() {
               </div>
             </div>
 
+            {(logType === 'stock_in' || logType === 'stock_out') && (
+              <div className="grid grid-cols-1 gap-4 p-3 bg-orange-50/30 rounded-2xl border border-orange-100 animate-in fade-in slide-in-from-top-1">
+                <div>
+                  <label className="block text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-1">Link to Dealer/Supplier</label>
+                  <select
+                    value={supplierId}
+                    onChange={(e) => {
+                      setSupplierId(e.target.value);
+                      const prod = products.find(p => p.id === selectedProductId);
+                      if (prod && unitCost === 0) setUnitCost(prod.cost_price);
+                    }}
+                    className="w-full text-xs p-2 bg-white border border-orange-200 focus:outline-none rounded-lg"
+                  >
+                    <option value="">Select dealer...</option>
+                    {suppliers.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} ({s.company || 'Private'})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-1">Unit Cost ({primaryCurrency})</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={unitCost || ''}
+                      placeholder="Price per unit"
+                      onChange={(e) => setUnitCost(Number(e.target.value))}
+                      className="w-full text-xs p-2 bg-white border border-orange-200 focus:outline-none rounded-lg font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-1">Total Bill</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={totalAmount || ''}
+                      onChange={(e) => setTotalAmount(Number(e.target.value))}
+                      className="w-full text-xs p-2 bg-white border border-orange-200 focus:outline-none rounded-lg font-mono font-bold"
+                    />
+                  </div>
+                </div>
+
+                {logType === 'stock_in' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Amount Paid</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={paidAmount || ''}
+                        onChange={(e) => setPaidAmount(Number(e.target.value))}
+                        className="w-full text-xs p-2 bg-white border border-emerald-200 focus:outline-none rounded-lg font-mono text-emerald-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-red-600 uppercase tracking-widest mb-1">Payable Bal</label>
+                      <div className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg font-mono font-bold text-red-600">
+                        {(totalAmount - paidAmount).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div>
-              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Discrepancy / Supplier Reference Reason *</label>
+              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Discrepancy / Supplier Reference Reason (Optional)</label>
               <input
                 type="text"
-                required
                 placeholder="e.g. Received wheat Bags shipment from Sargodha Silos"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
@@ -203,15 +299,33 @@ export default function InventoryView() {
                         </div>
                         <div>
                           <span className="block font-bold text-gray-950 text-xs">{item?.name || 'Deleted Flour Item'}</span>
+                          {log.supplier_id && (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-black text-orange-600 bg-orange-50 px-1 rounded uppercase tracking-tighter">
+                              Dealer: {suppliers.find(s => s.id === log.supplier_id)?.name || 'Unknown'}
+                            </span>
+                          )}
                           <span className="block text-[10px] text-gray-550 italic leading-snug mt-0.5">Note: "{log.reason}"</span>
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0">
-                        <span className={`block font-extrabold font-mono text-sm ${isAdd ? 'text-emerald-700' : 'text-red-700'}`}>
-                          {isAdd ? '+' : '-'}{log.quantity} {log.unit}
-                        </span>
-                        <span className="block text-[9px] text-gray-400 mt-1">{formatPKDate(log.created_at)} {formatPKTime(log.created_at)}</span>
+                      <div className="text-right shrink-0 flex items-center gap-2">
+                        <div>
+                          <span className={`block font-extrabold font-mono text-sm ${isAdd ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {isAdd ? '+' : '-'}{log.quantity} {log.unit}
+                          </span>
+                          <span className="block text-[9px] text-gray-400 mt-1">{formatPKDate(log.created_at)} {formatPKTime(log.created_at)}</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (confirm('Verify: absolutely sure to reverse this stock entry? Product inventory levels will be adjusted back.')) {
+                              deleteInventoryLog(log.id);
+                            }
+                          }}
+                          className="p-1 text-gray-400 hover:text-red-600 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-red-100"
+                          title="Void Inventory Entry"
+                        >
+                          <Trash className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </div>
                   );

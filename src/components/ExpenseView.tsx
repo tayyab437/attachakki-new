@@ -3,15 +3,16 @@ import { useStore } from '../lib/store';
 import { 
   Coins, Plus, Search, Trash2, Calendar, Sparkles, AlertCircle, 
   Lightbulb, Truck, UserCheck, HardHat, Warehouse, Briefcase,
-  Package, TrendingUp
+  Package, TrendingUp, Edit2
 } from 'lucide-react';
 import { getPKTodayString, formatPKDate } from '../lib/time';
 
 export default function ExpenseView() {
-  const { expenses, addExpense, deleteExpense, currentShop } = useStore();
+  const { expenses, addExpense, deleteExpense, updateExpense, currentShop } = useStore();
   
   // States
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [category, setCategory] = useState<'Electricity' | 'Transport' | 'Labor' | 'Rent' | 'Packaging' | 'Maintenance' | 'Other'>('Electricity');
   const [amount, setAmount] = useState<number>(1000);
   const [description, setDescription] = useState('');
@@ -44,13 +45,36 @@ export default function ExpenseView() {
     e.preventDefault();
     if (amount <= 0 || !description.trim()) return;
 
-    addExpense({
-      category,
-      amount: Number(amount),
-      description,
-      date
-    });
+    if (editingId) {
+      updateExpense(editingId, {
+        category,
+        amount: Number(amount),
+        description,
+        date
+      });
+    } else {
+      addExpense({
+        category,
+        amount: Number(amount),
+        description,
+        date
+      });
+    }
 
+    resetForm();
+  };
+
+  const handleEdit = (exp: any) => {
+    setEditingId(exp.id);
+    setCategory(exp.category);
+    setAmount(exp.amount);
+    setDescription(exp.description);
+    setDate(exp.date);
+    setShowForm(true);
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
     setDescription('');
     setAmount(1000);
     setShowForm(false);
@@ -80,11 +104,14 @@ export default function ExpenseView() {
         </div>
 
         <button
-          onClick={() => setShowForm(!showForm)}
+          onClick={() => {
+            if (showForm && editingId) resetForm();
+            else setShowForm(!showForm);
+          }}
           className="flex items-center gap-1.5 px-4 py-2 bg-gray-950 hover:bg-gray-900 text-white font-semibold text-xs rounded-xl shadow-xs transition cursor-pointer self-start sm:self-auto"
         >
           <Plus className="h-4 w-4" />
-          <span>Record Operation Cost</span>
+          <span>{editingId ? 'Switch to New Draft' : 'Record Operation Cost'}</span>
         </button>
       </div>
 
@@ -93,7 +120,7 @@ export default function ExpenseView() {
         <div className="bg-amber-50/50 border border-amber-200/50 p-5 rounded-2xl space-y-4">
           <h3 className="text-xs font-bold text-orange-950 uppercase tracking-widest flex items-center gap-1.5">
             <Sparkles className="h-4 w-4 text-orange-600" />
-            <span>Onboard Outflow Operating Cost</span>
+            <span>{editingId ? 'Modify Registered Cost Log' : 'Onboard Outflow Operating Cost'}</span>
           </h3>
 
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -153,7 +180,7 @@ export default function ExpenseView() {
 
             <div className="md:col-span-4 flex items-center justify-end gap-2 pt-1">
               <button 
-                onClick={() => setShowForm(false)} 
+                onClick={resetForm} 
                 type="button" 
                 className="px-4 py-2 border border-gray-205 text-gray-650 text-xs font-semibold rounded-xl"
               >
@@ -163,7 +190,7 @@ export default function ExpenseView() {
                 type="submit" 
                 className="px-6 py-2 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
               >
-                Log Outflow Expenditure
+                {editingId ? 'Update Expenditure' : 'Log Outflow Expenditure'}
               </button>
             </div>
           </form>
@@ -275,17 +302,26 @@ export default function ExpenseView() {
                       {exp.amount.toLocaleString()}
                     </td>
                     <td className="px-5 py-3.5 text-center">
-                      <button
-                        onClick={() => {
-                          if (confirm('Verify: sure to delete logged cost?')) {
-                            deleteExpense(exp.id);
-                          }
-                        }}
-                        className="p-1 text-gray-400 hover:text-red-750 hover:bg-red-50 rounded-lg"
-                        title="Delete log"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex justify-center gap-2">
+                        <button 
+                          onClick={() => handleEdit(exp)}
+                          className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                          title="Edit log"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirm('Verify: sure to delete logged cost?')) {
+                              deleteExpense(exp.id);
+                            }
+                          }}
+                          className="p-1 text-gray-400 hover:text-red-750 hover:bg-red-50 rounded-lg"
+                          title="Delete log"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -64,6 +64,8 @@ export interface InventoryLog {
   quantity: number;
   unit: string;
   reason: string;
+  supplier_id?: string | null;
+  unit_cost?: number | null;
   created_by: string;
   created_at: string;
   pending_sync?: boolean;
@@ -91,6 +93,8 @@ export interface CustomerTransaction {
   payment_method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa' | null;
   created_at: string;
   pending_sync?: boolean;
+  net_amount?: number;
+  paid_on_spot?: number;
 }
 
 export interface Supplier {
@@ -108,7 +112,7 @@ export interface SupplierTransaction {
   id: string;
   shop_id: string;
   supplier_id: string;
-  type: 'grain_purchased' | 'payment_made';
+  type: 'grain_purchased' | 'payment_made' | 'stock_purchase' | 'stock_return';
   amount: number;
   description: string;
   payment_method: 'Cash' | 'Bank' | 'JazzCash' | 'EasyPaisa' | null;
