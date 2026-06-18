@@ -232,4 +232,8 @@ ALTER TABLE public.sale_items DROP CONSTRAINT IF EXISTS sale_items_unit_check;
 ALTER TABLE public.inventory_logs DROP CONSTRAINT IF EXISTS inventory_logs_unit_check;
 ALTER TABLE public.supplier_transactions DROP CONSTRAINT IF EXISTS supplier_transactions_type_check;
 ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
+ALTER TABLE public.invoices DROP CONSTRAINT IF EXISTS invoices_shop_id_invoice_number_key;
+ALTER TABLE public.customer_transactions DROP CONSTRAINT IF EXISTS customer_transactions_customer_id_fkey;
+ALTER TABLE public.supplier_transactions DROP CONSTRAINT IF EXISTS supplier_transactions_supplier_id_fkey;
+
 
